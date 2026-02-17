@@ -39,7 +39,7 @@ const GROUNDING = [
 ];
 
 // ─── Utility ────────────────────────────────────────────────────────────────
-function timeAgo(ts) { return ts; }
+function timeAgo(ts: string) { return ts; }
 
 // ─── Sub-components ─────────────────────────────────────────────────────────
 function MoodDot({ level, size = 10 }) {
