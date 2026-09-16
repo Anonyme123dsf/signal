@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
-  ContactRow, DealRow, DealStatus, ListingRow, MarketRow, MessageRow, MessageStatus,
-  OpportunityRow, OpportunityStatus, PriceRow, SpreadSampleRow, WorkerHeartbeatRow,
+  BalanceDelta, ContactRow, DealRow, DealStatus, ListingRow, MarketRow, MessageRow, MessageStatus,
+  OpportunityRow, OpportunityStatus, PaperBalanceRow, PriceRow, SpreadSampleRow, WorkerHeartbeatRow,
 } from "../../../shared/types.ts";
 import { candidateKey, type Candidate } from "../engine/spread.ts";
 import type { NewDeal, NewMessage, OpportunityUpsertResult, Store } from "./types.ts";
@@ -18,6 +18,7 @@ export class MemoryStore implements Store {
   messages = new Map<string, MessageRow>();
   heartbeats = new Map<string, WorkerHeartbeatRow>();
   spreadSamples: SpreadSampleRow[] = [];
+  balances = new Map<string, PaperBalanceRow>();
 
   async init(): Promise<void> {}
 
@@ -141,6 +142,30 @@ export class MemoryStore implements Store {
 
   async heartbeat(row: WorkerHeartbeatRow): Promise<void> {
     this.heartbeats.set(row.worker_id, row);
+  }
+
+  async seedPaperBalances(rows: { market_id: string; asset: string; amount: number }[], reset: boolean): Promise<void> {
+    if (reset) this.balances.clear();
+    for (const r of rows) {
+      const key = `${r.market_id}|${r.asset}`;
+      if (!this.balances.has(key)) {
+        this.balances.set(key, { market_id: r.market_id, asset: r.asset, amount: r.amount, initial_amount: r.amount, updated_at: new Date().toISOString() });
+      }
+    }
+  }
+
+  async listPaperBalances(): Promise<PaperBalanceRow[]> {
+    return [...this.balances.values()];
+  }
+
+  async applyBalanceDeltas(deltas: BalanceDelta[]): Promise<void> {
+    for (const d of deltas) {
+      const key = `${d.market_id}|${d.asset}`;
+      const row = this.balances.get(key) ?? { market_id: d.market_id, asset: d.asset, amount: 0, initial_amount: 0, updated_at: "" };
+      row.amount += d.delta;
+      row.updated_at = new Date().toISOString();
+      this.balances.set(key, row);
+    }
   }
 
   async saveSpreadSamples(rows: SpreadSampleRow[]): Promise<void> {

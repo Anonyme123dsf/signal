@@ -1,6 +1,7 @@
 import type { MarketRow, PriceRow, SpreadSampleRow } from "../../shared/types.ts";
 import { buildAdapters } from "./adapters/registry.ts";
 import type { MarketAdapter, Quote } from "./adapters/types.ts";
+import { maybeAlert } from "./comms/alerts.ts";
 import { createDraftsForOpportunity } from "./comms/drafts.ts";
 import { pollInbox } from "./comms/inbox.ts";
 import { createMailer, processApprovedMessages } from "./comms/mailer.ts";
@@ -22,6 +23,7 @@ interface CycleStats {
   candidates: number;
   triangles: number;
   newOpportunities: number;
+  alerts: number;
   expired: number;
   samples: number;
   adapterErrors: string[];
@@ -39,10 +41,12 @@ export interface CycleState {
   lastSampleAt: number;
   lastCleanupAt: number;
   health: Map<string, AdapterHealth>;
+  /** Letzte Benachrichtigung je Route, für den Cooldown. */
+  lastAlertAt: Map<string, number>;
 }
 
 export function newCycleState(now = Date.now()): CycleState {
-  return { lastSampleAt: 0, lastCleanupAt: now, health: new Map() };
+  return { lastSampleAt: 0, lastCleanupAt: now, health: new Map(), lastAlertAt: new Map() };
 }
 
 /** Ab so vielen Fehlern in Folge wird ein Adapter ausgesetzt, mit wachsender Pause bis zur Obergrenze. */
@@ -142,10 +146,12 @@ export async function runCycle(
     .sort((a, b) => b.net_spread_bps - a.net_spread_bps);
 
   let newOpportunities = 0;
+  let alerts = 0;
   for (const c of candidates) {
     const { row, created } = await store.upsertOpportunity(c, now);
     if (!created) continue;
     newOpportunities++;
+    if (await maybeAlert(cfg, store, mailer, markets, row, state.lastAlertAt, now.getTime())) alerts++;
     if (c.kind === "triangle") {
       log.info(`Dreieck ${c.symbol} auf ${c.buy_market_id}: brutto ${c.gross_spread_bps} bps, netto ${c.net_spread_bps} bps, ca. ${c.est_profit_quote} bei Einsatz ${c.trade_size}`);
     } else {
@@ -159,7 +165,10 @@ export async function runCycle(
   }
 
   const expired = await store.expireOpportunities(new Date(now.getTime() - cfg.opportunityTtlMs));
-  await processApprovedDeals(store, markets, { slippageBps: cfg.slippageBps, transferModel: cfg.transferModel, maxQuoteAgeMs: cfg.maxQuoteAgeMs });
+  await processApprovedDeals(store, markets, {
+    slippageBps: cfg.slippageBps, transferModel: cfg.transferModel, maxQuoteAgeMs: cfg.maxQuoteAgeMs,
+    enforceBalances: cfg.paperBalances.length > 0,
+  });
   await processApprovedMessages(store, mailer);
 
   // Historie: alle bewerteten Börsenrouten, auch die unprofitablen. Inserate sind statisch und bleiben draußen.
@@ -181,7 +190,7 @@ export async function runCycle(
 
   return {
     quotes: quotes.length, skippedAdapters, routes: crossRoutes.length + triangleRoutes.length, candidates: candidates.length,
-    triangles: triangleRoutes.length, newOpportunities, expired, samples, adapterErrors, durationMs: Date.now() - started,
+    triangles: triangleRoutes.length, newOpportunities, alerts, expired, samples, adapterErrors, durationMs: Date.now() - started,
   };
 }
 
@@ -206,7 +215,15 @@ async function main() {
   if (!live.length) throw new Error("Kein Adapter einsatzbereit");
 
   const markets = await store.syncMarkets(live.flatMap((a) => a.markets()));
+  if (cfg.paperBalances.length) {
+    const unknown = cfg.paperBalances.filter((b) => !markets.has(b.market_id)).map((b) => b.market_id);
+    if (unknown.length) log.warn(`PAPER_BALANCES nennt unbekannte Märkte: ${[...new Set(unknown)].join(", ")}`);
+    await store.seedPaperBalances(cfg.paperBalances.filter((b) => markets.has(b.market_id)), cfg.paperBalancesReset);
+    const balances = await store.listPaperBalances();
+    log.info(`Paper-Bestände: ${balances.map((b) => `${b.market_id} ${b.asset} ${b.amount}`).join(", ")}`);
+  }
   const mailer = createMailer(cfg);
+  if (cfg.alertEmail) log.info(`Benachrichtigungen an ${cfg.alertEmail} ab ${cfg.alertBps} bps, Cooldown ${cfg.alertCooldownMs / 1000} s`);
   log.info(`Märkte: ${[...markets.values()].map((m) => `${m.id} (${m.taker_fee_bps} bps)`).join(", ")}`);
 
   let running = true;

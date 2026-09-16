@@ -210,6 +210,23 @@ export interface SpreadSeriesPoint {
   max_net: number;
 }
 
+/** Paper-Bestand je Börse und Asset. Wird nur geführt, wenn PAPER_BALANCES gesetzt ist. */
+export interface PaperBalanceRow {
+  market_id: string;
+  asset: string;
+  amount: number;
+  /** Startbestand aus der Konfiguration, für die Anzeige der Veränderung. */
+  initial_amount: number;
+  updated_at: string;
+}
+
+/** Veränderung eines Bestands durch eine Ausführung. */
+export interface BalanceDelta {
+  market_id: string;
+  asset: string;
+  delta: number;
+}
+
 export interface WorkerHeartbeatRow {
   worker_id: string;
   last_seen: string;

@@ -84,6 +84,28 @@ export interface Config {
   inboxPollMs: number;
   mockMarkets: number;
   mockSeed: number;
+  /** Startbestände für Paper-Trading, z. B. [{market_id:"kraken",asset:"EUR",amount:1000}]. Leer = keine Bestandsführung. */
+  paperBalances: { market_id: string; asset: string; amount: number }[];
+  /** true: Bestände beim Start auf die konfigurierten Werte zurücksetzen. */
+  paperBalancesReset: boolean;
+  /** Empfänger für Benachrichtigungen über neue Gelegenheiten. Leer = aus. */
+  alertEmail: string;
+  /** Ab diesem Netto-Spread (bps) wird benachrichtigt. */
+  alertBps: number;
+  /** Pro Route höchstens eine Benachrichtigung in diesem Abstand. */
+  alertCooldownMs: number;
+  /** Link zum Dashboard in Benachrichtigungen, z. B. https://signal.example.com/arbitrage */
+  dashboardUrl: string;
+}
+
+/** "kraken:EUR=1000,kraken:BTC=0.02,bitvavo:EUR=1000" → Liste von Beständen. */
+export function parsePaperBalances(raw: string): { market_id: string; asset: string; amount: number }[] {
+  if (!raw.trim()) return [];
+  return raw.split(",").map((entry) => {
+    const m = /^\s*([^:\s]+):([^=\s]+)=([0-9.]+)\s*$/.exec(entry);
+    if (!m) throw new Error(`PAPER_BALANCES: Eintrag "${entry.trim()}" hat nicht die Form markt:ASSET=betrag`);
+    return { market_id: m[1], asset: m[2].toUpperCase(), amount: Number(m[3]) };
+  });
 }
 
 export function loadConfig(): Config {
@@ -126,5 +148,11 @@ export function loadConfig(): Config {
     inboxPollMs: num("INBOX_POLL_MS", 60000),
     mockMarkets: num("MOCK_MARKETS", 3),
     mockSeed: num("MOCK_SEED", 42),
+    paperBalances: parsePaperBalances(str("PAPER_BALANCES", "")),
+    paperBalancesReset: bool("PAPER_BALANCES_RESET", false),
+    alertEmail: str("ALERT_EMAIL", ""),
+    alertBps: num("ALERT_BPS", 30),
+    alertCooldownMs: num("ALERT_COOLDOWN_MS", 900000),
+    dashboardUrl: str("DASHBOARD_URL", ""),
   };
 }

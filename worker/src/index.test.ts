@@ -6,7 +6,8 @@ import { MockAdapter } from "./adapters/mock.ts";
 import type { MarketAdapter, Quote } from "./adapters/types.ts";
 import type { Mailer, OutgoingMail } from "./comms/mailer.ts";
 import type { Config } from "./config.ts";
-import { processApprovedDeals } from "./execution/paper.ts";
+import { parsePaperBalances } from "./config.ts";
+import { checkBalances, processApprovedDeals } from "./execution/paper.ts";
 import { BACKOFF, newCycleState, runCycle, wantedSymbols } from "./index.ts";
 import { MemoryStore } from "./store/memory.ts";
 
@@ -36,7 +37,8 @@ function testConfig(overrides: Partial<Config> = {}): Config {
     spreadSampleIntervalMs: 0, spreadHistoryDays: 14, maxQuoteAgeMs: 30000, executionMode: "paper",
     mailer: "console", mailFrom: "Bot <bot@example.com>", resendApiKey: "",
     smtp: { host: "", port: 587, user: "", pass: "", secure: false }, imap: null, inboxPollMs: 60000,
-    mockMarkets: 2, mockSeed: 1, ...overrides,
+    mockMarkets: 2, mockSeed: 1, paperBalances: [], paperBalancesReset: false,
+    alertEmail: "", alertBps: 30, alertCooldownMs: 900000, dashboardUrl: "", ...overrides,
   };
 }
 
@@ -282,4 +284,120 @@ test("Paper-Deals werden nicht gegen veraltete Kurse gefüllt", async () => {
   for (const p of store.prices.values()) p.ts = new Date().toISOString();
   await processApprovedDeals(store, markets, { slippageBps: 0, transferModel: "prefunded", maxQuoteAgeMs: 30_000 });
   assert.equal(store.deals.get(retry.id)!.status, "filled");
+});
+
+test("Paper-Bestände: Cross-Deal braucht Quote auf der Kauf- und Basis auf der Verkaufsbörse, danach wird umgebucht", async () => {
+  const balances = parsePaperBalances("a:EUR=1000,a:BTC=0,b:EUR=0,b:BTC=0.005");
+  const cfg = testConfig({ symbols: ["BTC/EUR"], minNetSpreadBps: 1, tradeSizeQuote: 500, paperBalances: balances });
+  const a = new StaticAdapter("a", 10, { "BTC/EUR": [49990, 50000] });
+  const b = new StaticAdapter("b", 10, { "BTC/EUR": [50500, 50510] });
+  const store = new MemoryStore();
+  const markets = await store.syncMarkets([...a.markets(), ...b.markets()]);
+  await store.seedPaperBalances(balances, false);
+  const mailer = new RecordingMailer();
+
+  await runCycle(cfg, store, [a, b], markets, mailer);
+  const opp = [...store.opportunities.values()].find((o) => o.buy_market_id === "a" && o.sell_market_id === "b")!;
+  assert.equal(opp.trade_size, 0.01); // 500 EUR / 50000
+
+  // Auf b liegen nur 0.005 BTC → Verkauf von 0.01 scheitert, Gelegenheit bleibt offen, Bestände unverändert.
+  const tooBig = await store.createDeal({ opportunity_id: opp.id, mode: "paper", status: "approved" });
+  await runCycle(cfg, store, [a, b], markets, mailer);
+  assert.equal(store.deals.get(tooBig.id)!.status, "failed");
+  assert.match(store.deals.get(tooBig.id)!.error ?? "", /Bestand reicht nicht: b BTC/);
+  assert.equal(store.opportunities.get(opp.id)!.status, "open");
+  assert.equal(store.balances.get("a|EUR")!.amount, 1000);
+
+  // Bestand auf b aufstocken → Deal geht durch und bucht auf beiden Börsen um.
+  await store.applyBalanceDeltas([{ market_id: "b", asset: "BTC", delta: 0.005 }]);
+  const ok = await store.createDeal({ opportunity_id: opp.id, mode: "paper", status: "approved" });
+  await runCycle(cfg, store, [a, b], markets, mailer);
+  const filled = store.deals.get(ok.id)!;
+  assert.equal(filled.status, "filled", filled.error ?? "");
+  const bal = (m: string, x: string) => store.balances.get(`${m}|${x}`)!.amount;
+  const buyCost = 0.01 * 50000 * (1 + 5 / 1e4);
+  assert.ok(Math.abs(bal("a", "EUR") - (1000 - buyCost * 1.001)) < 1e-6, `a EUR ${bal("a", "EUR")}`);
+  assert.ok(Math.abs(bal("a", "BTC") - 0.01) < 1e-9);
+  assert.ok(Math.abs(bal("b", "BTC") - 0) < 1e-9);
+  const sellProceeds = 0.01 * 50500 * (1 - 5 / 1e4);
+  assert.ok(Math.abs(bal("b", "EUR") - sellProceeds * 0.999) < 1e-6, `b EUR ${bal("b", "EUR")}`);
+  // Summe der EUR-Veränderung entspricht dem PnL des Deals.
+  const eurChange = bal("a", "EUR") + bal("b", "EUR") - 1000;
+  assert.ok(Math.abs(eurChange - (filled.realized_pnl_quote ?? 0)) < 1e-3);
+  assert.equal((filled as unknown as { deltas?: unknown }).deltas, undefined, "Deltas werden nicht im Deal gespeichert");
+});
+
+test("Paper-Bestände: Dreieck braucht nur den Startbetrag, die weiteren Schritte leben vom Ertrag", async () => {
+  const balances = parsePaperBalances("ex:EUR=400");
+  const cfg = testConfig({ triangular: true, symbols: ["BTC/EUR", "ETH/EUR"], autoPaperBps: 1, minNetSpreadBps: 1, tradeSizeQuote: 500, paperBalances: balances });
+  const ex = new StaticAdapter("ex", 10, { "BTC/EUR": [49990, 50000], "ETH/BTC": [0.05, 0.05], "ETH/EUR": [2525, 2530] });
+  const store = new MemoryStore();
+  const markets = await store.syncMarkets(ex.markets());
+  await store.seedPaperBalances(balances, false);
+
+  // 400 EUR reichen nicht für 500 EUR Einsatz → Auto-Paper-Deal scheitert an der Bestandsprüfung.
+  await runCycle(cfg, store, [ex], markets, new RecordingMailer());
+  const [failed] = await store.listDeals("failed");
+  assert.ok(failed);
+  assert.match(failed.error ?? "", /ex EUR 400 vorhanden, 500 nötig/);
+
+  await store.applyBalanceDeltas([{ market_id: "ex", asset: "EUR", delta: 200 }]);
+  const opp = [...store.opportunities.values()].find((o) => o.kind === "triangle" && o.status === "open")!;
+  const deal = await store.createDeal({ opportunity_id: opp.id, mode: "paper", status: "approved" });
+  await runCycle(cfg, store, [ex], markets, new RecordingMailer());
+  const filled = store.deals.get(deal.id)!;
+  assert.equal(filled.status, "filled", filled.error ?? "");
+  const eur = store.balances.get("ex|EUR")!.amount;
+  assert.ok(Math.abs(eur - (600 + (filled.realized_pnl_quote ?? 0))) < 1e-3, `EUR ${eur}`);
+  // Zwischenwährungen sind wieder bei 0 (bis auf Rundung).
+  assert.ok(Math.abs(store.balances.get("ex|BTC")!.amount) < 1e-9);
+  assert.ok(Math.abs(store.balances.get("ex|ETH")!.amount) < 1e-9);
+});
+
+test("checkBalances und parsePaperBalances", () => {
+  assert.deepEqual(parsePaperBalances(" kraken:eur=1000 , bitvavo:BTC=0.5"), [
+    { market_id: "kraken", asset: "EUR", amount: 1000 }, { market_id: "bitvavo", asset: "BTC", amount: 0.5 },
+  ]);
+  assert.throws(() => parsePaperBalances("kraken=1000"), /markt:ASSET=betrag/);
+  const rows = [{ market_id: "a", asset: "EUR", amount: 100, initial_amount: 100, updated_at: "" }];
+  assert.equal(checkBalances(rows, [{ market_id: "a", asset: "EUR", delta: -100 }]), null);
+  assert.match(checkBalances(rows, [{ market_id: "a", asset: "EUR", delta: -100.5 }]) ?? "", /a EUR 100 vorhanden/);
+  // Ertrag eines früheren Schritts darf den nächsten finanzieren.
+  assert.equal(checkBalances(rows, [{ market_id: "a", asset: "BTC", delta: 0.002 }, { market_id: "a", asset: "BTC", delta: -0.002 }]), null);
+});
+
+test("Benachrichtigung ab Schwelle, mit Cooldown je Route, als gesendete Nachricht gespeichert", async () => {
+  const cfg = testConfig({ symbols: ["BTC/EUR"], minNetSpreadBps: 1, alertEmail: "ich@example.com", alertBps: 50, alertCooldownMs: 60_000, dashboardUrl: "https://app.example/arbitrage" });
+  const a = new StaticAdapter("a", 10, { "BTC/EUR": [49990, 50000] });
+  const b = new StaticAdapter("b", 10, { "BTC/EUR": [50500, 50510] }); // 100 bps brutto, ~75 netto
+  const c = new StaticAdapter("c", 10, { "BTC/EUR": [50150, 50160] }); // 30 bps brutto, unter der Alarmschwelle
+  const store = new MemoryStore();
+  const markets = await store.syncMarkets([...a.markets(), ...b.markets(), ...c.markets()]);
+  const mailer = new RecordingMailer();
+  const state = newCycleState();
+
+  const s1 = await runCycle(cfg, store, [a, b, c], markets, mailer, state);
+  assert.equal(s1.alerts, 1);
+  assert.equal(mailer.sent.length, 1);
+  assert.equal(mailer.sent[0].to, "ich@example.com");
+  assert.match(mailer.sent[0].subject, /^Gelegenheit BTC\/EUR: netto/);
+  assert.match(mailer.sent[0].text, /a 50.000 → b 50.500/);
+  assert.match(mailer.sent[0].text, /https:\/\/app\.example\/arbitrage/);
+  const stored = await store.listMessages("sent");
+  assert.equal(stored.length, 1);
+  assert.match(stored[0].thread_tag, /^ALR-[0-9A-F]{6}$/);
+
+  // Gelegenheit läuft ab und taucht neu auf: innerhalb des Cooldowns keine zweite Mail.
+  for (const o of store.opportunities.values()) o.status = "expired";
+  const s2 = await runCycle(cfg, store, [a, b, c], markets, mailer, state);
+  assert.equal(s2.newOpportunities >= 1, true);
+  assert.equal(s2.alerts, 0);
+  assert.equal(mailer.sent.length, 1);
+
+  // Cooldown vorbei → wieder eine Mail.
+  for (const [k, v] of state.lastAlertAt) state.lastAlertAt.set(k, v - 61_000);
+  for (const o of store.opportunities.values()) o.status = "expired";
+  const s3 = await runCycle(cfg, store, [a, b, c], markets, mailer, state);
+  assert.equal(s3.alerts, 1);
+  assert.equal(mailer.sent.length, 2);
 });

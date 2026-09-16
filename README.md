@@ -86,7 +86,7 @@ der Bereich in Produktion gesperrt und antwortet mit 503; lokal unter `npm run d
 ### Einrichtung
 
 1. Supabase-Projekt anlegen und die Migrationen aus `supabase/migrations/` der Reihe nach im SQL-Editor ausführen
-   (`0001_arbitrage.sql`, dann `0002_triangles_and_history.sql`).
+   (`0001_arbitrage.sql`, `0002_triangles_and_history.sql`, `0003_paper_balances.sql`).
    Alle Tabellen haben RLS ohne Policies: Zugriff nur mit dem Service-Role-Key, der nie in den Browser darf.
 2. Dashboard: `.env.local` nach `.env.example` anlegen, dann
 
@@ -121,6 +121,30 @@ der Bereich in Produktion gesperrt und antwortet mit 503; lokal unter `npm run d
 - **Heartbeat:** `worker_heartbeats` enthält je Worker den letzten Zyklus mit Anzahl Preise, Routen, Dreiecken,
   Fehlern und Dauer. Das Dashboard zeigt den Worker als offline, wenn der Heartbeat älter als 20 s ist.
 
+### Paper-Bestände
+
+Ohne `PAPER_BALANCES` simuliert der Worker Deals ohne Bestandsprüfung. Mit `PAPER_BALANCES`, etwa
+`kraken:EUR=1000,kraken:BTC=0.01,bitvavo:EUR=1000,bitvavo:BTC=0.01`, gilt:
+
+- Vor jeder Ausführung werden die Bestandsveränderungen aller Schritte in Reihenfolge durchgespielt. Ein Cross-Deal
+  braucht Quote-Währung auf der Kaufbörse und Basis auf der Verkaufsbörse (vorfinanziert). Ein Dreieck braucht nur
+  den Startbetrag, die weiteren Schritte leben vom Ertrag des vorherigen.
+- Reicht der Bestand nicht, schlägt der Deal mit klarer Meldung fehl und die Gelegenheit bleibt offen.
+- Nach der Ausführung werden die Bestände umgebucht. Die Seite `/arbitrage/balances` zeigt sie je Börse mit Startwert,
+  Veränderung und Bewertung zum Mittelkurs in EUR.
+- Startbestände werden nur angelegt, wenn die Zeile noch fehlt. `PAPER_BALANCES_RESET=true` setzt alles zurück.
+
+So wird sichtbar, was Cross-Arbitrage wirklich kostet: Bestand auf beiden Seiten, der nach jedem Deal weiter
+auseinanderläuft und irgendwann umgeschichtet werden muss.
+
+### Benachrichtigungen
+
+`ALERT_EMAIL` setzen, dann schickt der Worker über den konfigurierten Mailer eine E-Mail, sobald eine neue Gelegenheit
+mindestens `ALERT_BPS` netto erreicht, pro Route höchstens einmal je `ALERT_COOLDOWN_MS`. Die Mail enthält Route,
+Brutto, Kosten, Netto, Einsatz, erwarteten Gewinn, die Schritte und den Link aus `DASHBOARD_URL`. Jede Benachrichtigung
+wird als gesendete Nachricht mit Kennung `ALR-…` gespeichert und im Dashboard unter Nachrichten gezeigt.
+Es wird dabei nichts ausgeführt.
+
 ### CSV-Export
 
 Auf der Verlaufsseite gibt es "CSV exportieren": alle Messpunkte des gewählten Zeitraums und der gewählten Art
@@ -143,6 +167,9 @@ Push und Pull Request.
 | `TRANSFER_MODEL` | `prefunded` (Bestand auf beiden Börsen) oder `withdraw` (Abhebegebühr einrechnen) |
 | `TRIANGULAR` / `TRIANGLE_START` | Dreiecke bewerten, Startwährung (leer = Quote des ersten Symbols) |
 | `SPREAD_SAMPLE_INTERVAL_MS` / `SPREAD_HISTORY_DAYS` | Takt und Aufbewahrung der Spread-Historie |
+| `PAPER_BALANCES` | Startbestände je Börse; leer = keine Bestandsführung |
+| `ALERT_EMAIL` / `ALERT_BPS` / `ALERT_COOLDOWN_MS` | Benachrichtigungen über neue Gelegenheiten |
+| `MAX_QUOTE_AGE_MS` | Paper-Deals nicht gegen ältere Kurse füllen |
 | `MAILER` | `console`, `smtp` oder `resend`; dazu `MAIL_FROM` und Zugangsdaten |
 | `IMAP_*` | Postfach für Antworten, leer = aus |
 

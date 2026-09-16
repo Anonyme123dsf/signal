@@ -42,7 +42,9 @@ function Section({ title, hint, items, actions }: { title: string; hint: string;
 export default async function MessagesPage() {
   const messages = await getMessages();
   if (!messages) return <NotConfigured />;
-  const by = (s: MessageWithContact["status"]) => messages.filter((m) => m.status === s);
+  const isAlert = (m: MessageWithContact) => m.thread_tag.startsWith("ALR-");
+  const by = (s: MessageWithContact["status"]) => messages.filter((m) => m.status === s && !isAlert(m));
+  const alerts = messages.filter(isAlert);
 
   return (
     <>
@@ -57,6 +59,7 @@ export default async function MessagesPage() {
       <Section title="Freigegeben, wartet auf Versand" hint="Nichts in der Warteschlange." items={by("approved")} />
       <Section title="Antworten" hint="Noch keine Antworten (IMAP_HOST im Worker gesetzt?)." items={by("received")} />
       <Section title="Gesendet" hint="Noch nichts gesendet." items={by("sent")} />
+      <Section title="Benachrichtigungen an dich" hint="Keine Benachrichtigungen. ALERT_EMAIL und ALERT_BPS im Worker setzen." items={alerts} />
     </>
   );
 }

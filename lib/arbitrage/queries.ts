@@ -1,5 +1,5 @@
 import type {
-  ContactRow, DealRow, ListingRow, MarketRow, MessageRow, OpportunityRow, PriceRow,
+  ContactRow, DealRow, ListingRow, MarketRow, MessageRow, OpportunityRow, PaperBalanceRow, PriceRow,
   SpreadRouteStats, SpreadSeriesPoint, WorkerHeartbeatRow,
 } from "@/shared/types";
 import { getServiceClient } from "./supabase";
@@ -114,4 +114,35 @@ export function routeLabel(r: { kind: string; symbol: string; buy_market_id: str
 
 export function routeKey(r: { symbol: string; buy_market_id: string; sell_market_id: string }): string {
   return `${r.symbol}|${r.buy_market_id}|${r.sell_market_id}`;
+}
+
+export interface BalancesView {
+  fetchedAt: number;
+  balances: PaperBalanceRow[];
+  markets: MarketRow[];
+  prices: PriceRow[];
+}
+
+export async function getBalances(): Promise<BalancesView | null> {
+  const db = getServiceClient();
+  if (!db) return null;
+  const [balances, markets, prices] = await Promise.all([
+    db.from("paper_balances").select("*").order("market_id").order("asset"),
+    db.from("markets").select("*").order("id"),
+    db.from("latest_prices").select("*"),
+  ]);
+  return { fetchedAt: Date.now(), balances: must(balances, "paper_balances"), markets: must(markets, "markets"), prices: must(prices, "latest_prices") };
+}
+
+/**
+ * Bewertet einen Bestand in der Quote-Währung: zuerst mit dem Kurs derselben Börse,
+ * sonst mit irgendeinem Kurs für ASSET/QUOTE. Die Quote-Währung selbst zählt 1:1.
+ */
+export function valueInQuote(asset: string, amount: number, marketId: string, prices: PriceRow[], quote = "EUR"): number | null {
+  if (asset === quote) return amount;
+  const symbol = `${asset}/${quote}`;
+  const own = prices.find((p) => p.market_id === marketId && p.symbol === symbol);
+  const any = own ?? prices.find((p) => p.symbol === symbol);
+  const mid = any ? (any.bid != null && any.ask != null ? (Number(any.bid) + Number(any.ask)) / 2 : Number(any.last ?? any.bid ?? any.ask)) : null;
+  return mid != null && Number.isFinite(mid) ? amount * mid : null;
 }

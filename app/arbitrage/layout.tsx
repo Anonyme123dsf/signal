@@ -11,6 +11,7 @@ const NAV = [
   { href: "/arbitrage", label: "Übersicht" },
   { href: "/arbitrage/deals", label: "Deals" },
   { href: "/arbitrage/history", label: "Verlauf" },
+  { href: "/arbitrage/balances", label: "Bestände" },
   { href: "/arbitrage/messages", label: "Nachrichten" },
   { href: "/arbitrage/listings", label: "Inserate" },
 ];

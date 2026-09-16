@@ -1,7 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type {
-  ContactRow, DealRow, DealStatus, ListingRow, MarketRow, MessageRow, MessageStatus,
-  OpportunityRow, OpportunityStatus, PriceRow, SpreadSampleRow, WorkerHeartbeatRow,
+  BalanceDelta, ContactRow, DealRow, DealStatus, ListingRow, MarketRow, MessageRow, MessageStatus,
+  OpportunityRow, OpportunityStatus, PaperBalanceRow, PriceRow, SpreadSampleRow, WorkerHeartbeatRow,
 } from "../../../shared/types.ts";
 import type { Candidate } from "../engine/spread.ts";
 import type { NewDeal, NewMessage, OpportunityUpsertResult, Store } from "./types.ts";
@@ -174,6 +174,41 @@ export class SupabaseStore implements Store {
   async heartbeat(row: WorkerHeartbeatRow): Promise<void> {
     const { error } = await this.db.from("worker_heartbeats").upsert(row, { onConflict: "worker_id" });
     if (error) fail("heartbeat schreiben", error);
+  }
+
+  async seedPaperBalances(rows: { market_id: string; asset: string; amount: number }[], reset: boolean): Promise<void> {
+    if (reset) {
+      const { error } = await this.db.from("paper_balances").delete().neq("market_id", "");
+      if (error) fail("paper_balances zurücksetzen", error);
+    }
+    if (!rows.length) return;
+    const now = new Date().toISOString();
+    const { error } = await this.db.from("paper_balances").upsert(
+      rows.map((r) => ({ market_id: r.market_id, asset: r.asset, amount: r.amount, initial_amount: r.amount, updated_at: now })),
+      { onConflict: "market_id,asset", ignoreDuplicates: true },
+    );
+    if (error) fail("paper_balances anlegen", error);
+  }
+
+  async listPaperBalances(): Promise<PaperBalanceRow[]> {
+    const { data, error } = await this.db.from("paper_balances").select("*").order("market_id").order("asset");
+    if (error) fail("paper_balances lesen", error);
+    return data as PaperBalanceRow[];
+  }
+
+  async applyBalanceDeltas(deltas: BalanceDelta[]): Promise<void> {
+    // Ein Worker schreibt, deshalb reicht Lesen und Zurückschreiben je Zeile.
+    for (const d of deltas) {
+      const { data, error } = await this.db.from("paper_balances").select("amount, initial_amount")
+        .eq("market_id", d.market_id).eq("asset", d.asset).maybeSingle();
+      if (error) fail("paper_balance lesen", error);
+      const amount = Number(data?.amount ?? 0) + d.delta;
+      const { error: upErr } = await this.db.from("paper_balances").upsert(
+        { market_id: d.market_id, asset: d.asset, amount, initial_amount: Number(data?.initial_amount ?? 0), updated_at: new Date().toISOString() },
+        { onConflict: "market_id,asset" },
+      );
+      if (upErr) fail("paper_balance schreiben", upErr);
+    }
   }
 
   async saveSpreadSamples(rows: SpreadSampleRow[]): Promise<void> {

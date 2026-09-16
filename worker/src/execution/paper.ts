@@ -1,4 +1,4 @@
-import type { DealRow, Leg, MarketRow, OpportunityRow, OrderFill, PriceRow } from "../../../shared/types.ts";
+import type { BalanceDelta, DealRow, Leg, MarketRow, OpportunityRow, OrderFill, PaperBalanceRow, PriceRow } from "../../../shared/types.ts";
 import { baseAsset, quoteAsset } from "../engine/spread.ts";
 import { evaluateTriangle, findTriangles } from "../engine/triangle.ts";
 import { log } from "../log.ts";
@@ -9,6 +9,8 @@ export interface PaperParams {
   transferModel: "prefunded" | "withdraw";
   /** Kurse, die älter sind, gelten als unbrauchbar; der Deal schlägt dann fehl statt gegen alte Daten zu füllen. */
   maxQuoteAgeMs: number;
+  /** true: Bestände aus paper_balances prüfen und umbuchen (PAPER_BALANCES gesetzt). */
+  enforceBalances?: boolean;
 }
 
 /** Fehlermeldung, wenn ein Kurs zu alt ist, sonst null. */
@@ -23,6 +25,30 @@ export interface SimulatedDeal {
   sell_order: OrderFill | null;
   fills: OrderFill[];
   realized_pnl_quote: number;
+  /** Bestandsveränderungen in Ausführungsreihenfolge. */
+  deltas: BalanceDelta[];
+}
+
+/**
+ * Prüft, ob die Bestände für alle Schritte reichen. Die Deltas werden in Reihenfolge
+ * durchgespielt, damit ein Schritt vom Ertrag des vorherigen leben kann (Dreieck),
+ * ein Verkauf auf der zweiten Börse aber vorfinanzierten Bestand braucht (Cross).
+ */
+export function checkBalances(balances: PaperBalanceRow[], deltas: BalanceDelta[]): string | null {
+  const running = new Map(balances.map((b) => [`${b.market_id}|${b.asset}`, Number(b.amount)]));
+  for (const d of deltas) {
+    const key = `${d.market_id}|${d.asset}`;
+    const next = (running.get(key) ?? 0) + d.delta;
+    if (next < -1e-9) {
+      return `Bestand reicht nicht: ${d.market_id} ${d.asset} ${fmt(running.get(key) ?? 0)} vorhanden, ${fmt(-d.delta)} nötig`;
+    }
+    running.set(key, next);
+  }
+  return null;
+}
+
+function fmt(n: number): string {
+  return new Intl.NumberFormat("de-DE", { maximumFractionDigits: 6 }).format(n);
 }
 
 interface CrossLegs {
@@ -89,7 +115,19 @@ export function simulateCrossFills(opp: OpportunityRow, legs: CrossLegs, markets
       - buy_order.amount * buy_order.price - buy_order.fee_quote - transferCost,
     4,
   );
-  return { buy_order, sell_order, fills: [buy_order, sell_order], realized_pnl_quote };
+  const base = baseAsset(opp.symbol);
+  const deltas: BalanceDelta[] = [
+    { market_id: opp.buy_market_id, asset: quote, delta: -(buy_order.amount * buy_order.price + buy_order.fee_quote) },
+    { market_id: opp.buy_market_id, asset: base, delta: buy_order.amount },
+    { market_id: opp.sell_market_id, asset: base, delta: -sell_order.amount },
+    { market_id: opp.sell_market_id, asset: quote, delta: sell_order.amount * sell_order.price - sell_order.fee_quote },
+  ];
+  if (p.transferModel === "withdraw") {
+    // Beim Transfer wandert die Basis von der Kaufbörse zur Verkaufsbörse, die Netzgebühr geht dabei verloren.
+    const wf = buyMarket.withdrawal_fees[base] ?? 0;
+    deltas.splice(2, 0, { market_id: opp.buy_market_id, asset: base, delta: -buy_order.amount }, { market_id: opp.sell_market_id, asset: base, delta: buy_order.amount - wf });
+  }
+  return { buy_order, sell_order, fills: [buy_order, sell_order], realized_pnl_quote, deltas };
 }
 
 /** Wandelt einen Engine-Schritt in eine Ausführung um. Menge und Gebühr beziehen sich auf das Handelspaar. */
@@ -134,7 +172,11 @@ export function simulateTriangleFills(opp: OpportunityRow, prices: PriceRow[], m
 
   const ts = new Date().toISOString();
   const fills = c.legs.map((l) => legToFill(l, market, ts));
-  return { buy_order: null, sell_order: null, fills, realized_pnl_quote: round(c.legs[2].amount_out - c.legs[0].amount_in, 4) };
+  const deltas: BalanceDelta[] = c.legs.flatMap((l) => [
+    { market_id: l.market_id, asset: l.from_asset, delta: -l.amount_in },
+    { market_id: l.market_id, asset: l.to_asset, delta: l.amount_out },
+  ]);
+  return { buy_order: null, sell_order: null, fills, realized_pnl_quote: round(c.legs[2].amount_out - c.legs[0].amount_in, 4), deltas };
 }
 
 /** Führt alle freigegebenen Paper-Deals aus. Live-Deals werden abgelehnt. */
@@ -142,6 +184,7 @@ export async function processApprovedDeals(store: Store, markets: Map<string, Ma
   const deals = await store.listDeals("approved");
   if (!deals.length) return;
   const prices = await store.getLatestPrices();
+  let balances = p.enforceBalances ? await store.listPaperBalances() : null;
 
   for (const deal of deals) {
     if (deal.mode !== "paper") {
@@ -160,7 +203,14 @@ export async function processApprovedDeals(store: Store, markets: Map<string, Ma
         if ("error" in legs) throw new Error(legs.error);
         result = simulateCrossFills(opp, legs, markets, p);
       }
-      const patch: Partial<DealRow> = { status: "filled", ...result };
+      if (balances) {
+        const problem = checkBalances(balances, result.deltas);
+        if (problem) throw new Error(problem);
+        await store.applyBalanceDeltas(result.deltas);
+        balances = await store.listPaperBalances();
+      }
+      const { deltas: _deltas, ...stored } = result;
+      const patch: Partial<DealRow> = { status: "filled", ...stored };
       await store.updateDeal(deal.id, patch);
       await store.setOpportunityStatus(opp.id, "executed");
       log.info(`Paper-Deal ${deal.id.slice(0, 8)} ausgeführt: ${opp.kind} ${opp.symbol} auf ${opp.buy_market_id}${opp.kind === "cross" ? `→${opp.sell_market_id}` : ""}, PnL ${result.realized_pnl_quote}`);
