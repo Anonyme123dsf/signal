@@ -5,6 +5,26 @@ Next.js-Projekt (App Router, Tailwind 4, Supabase) mit zwei Teilen:
 - **`/`**: die bestehende Signal-Oberfläche (`app/page.tsx`).
 - **`/arbitrage`**: Dashboard des Arbitrage-Moduls. Der zugehörige Worker liegt in `worker/`.
 
+## Schnellstart
+
+Voraussetzungen: [Node.js 22](https://nodejs.org) und Git. Ein kostenloses Projekt auf [supabase.com](https://supabase.com).
+
+```bash
+git clone https://github.com/Anonyme123dsf/signal.git
+cd signal
+npm run setup        # fragt nach Supabase-URL, service_role Key und einem Passwort, installiert alles
+```
+
+Dann einmalig den Inhalt von `supabase/setup.sql` im Supabase SQL-Editor einfügen und auf "Run" klicken.
+
+```bash
+npm run start:all    # startet Dashboard und Worker zusammen, Strg+C beendet beide
+```
+
+Im Browser http://localhost:3000/arbitrage öffnen, Benutzer `admin`, Passwort aus der Einrichtung.
+
+Ohne Supabase und ohne Internet zum Ausprobieren: `npm run demo` (Mock-Börsen, alles im Speicher, Ausgabe im Terminal).
+
 ## Arbitrage-Modul
 
 Ziel: Preisunterschiede für dasselbe Gut über mehrere Märkte hinweg erkennen, nach Gebühren bewerten,

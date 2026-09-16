@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "setup": "node scripts/setup.mjs",
+    "start:all": "node scripts/start-all.mjs",
+    "demo": "npm --prefix worker run demo",
+    "sql:bundle": "node scripts/bundle-sql.mjs"
   },
   "dependencies": {
     "@supabase/auth-helpers-nextjs": "^0.15.0",

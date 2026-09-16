@@ -16,8 +16,10 @@ jobs:
           cache: npm
       - run: npm ci
       # Nur das Arbitrage-Modul wird geprüft; die bestehende Startseite ist davon ausgenommen.
-      - run: npx eslint app/arbitrage lib shared proxy.ts
+      - run: npx eslint app/arbitrage lib shared proxy.ts scripts
       - run: npm run build
+      # supabase/setup.sql muss zu den Migrationen passen.
+      - run: npm run sql:bundle && git diff --exit-code supabase/setup.sql
 
   worker:
     name: Worker (Typecheck, Tests)
