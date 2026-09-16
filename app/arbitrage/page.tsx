@@ -3,6 +3,7 @@ import { getOverview } from "@/lib/arbitrage/queries";
 import { createPaperDeal, dismissOpportunity } from "./actions";
 import { NotConfigured } from "./components/NotConfigured";
 import { RouteCell } from "./components/RouteCell";
+import { AutoRefresh } from "./components/AutoRefresh";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +23,8 @@ export default async function OverviewPage() {
 
   return (
     <>
+      {/* Kurse und Gelegenheiten ändern sich im Sekundentakt. */}
+      <AutoRefresh intervalMs={3000} />
       <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="card">
           <div className="text-xs text-[#7c7c9a]">Worker</div>

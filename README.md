@@ -77,6 +77,12 @@ die Zeitreihe zusätzlich als Tabellenansicht.
 Speicherbedarf: Mit vier Börsen, zwei Symbolen und Dreiecken sind es rund 30 Routen. Bei einem Messpunkt pro
 Minute ergibt das etwa 45.000 Zeilen pro Tag, rund 5 MB. Mit `SPREAD_HISTORY_DAYS=14` bleibt die Tabelle unter 100 MB.
 
+### Zugriffsschutz
+
+Unter `/arbitrage` werden Paper-Deals angelegt und E-Mails freigegeben. `proxy.ts` schützt den Bereich deshalb
+mit HTTP Basic Auth: `DASHBOARD_PASSWORD` setzen (optional `DASHBOARD_USER`, Standard `admin`). Ohne Passwort ist
+der Bereich in Produktion gesperrt und antwortet mit 503; lokal unter `npm run dev` bleibt er offen.
+
 ### Einrichtung
 
 1. Supabase-Projekt anlegen und die Migrationen aus `supabase/migrations/` der Reihe nach im SQL-Editor ausführen
@@ -100,7 +106,30 @@ Minute ergibt das etwa 45.000 Zeilen pro Tag, rund 5 MB. Mit `SPREAD_HISTORY_DAY
    ```
 
    Der Worker gehört nicht auf Vercel (Serverless beendet lange Prozesse). Ein kleiner VPS, ein Raspberry Pi
-   oder der eigene Rechner reichen; `npm start` unter systemd oder pm2 laufen lassen.
+   oder der eigene Rechner reichen. Zwei fertige Wege:
+
+   - systemd: `worker/deploy/signal-worker.service` (Anleitung im Kopf der Datei).
+   - Docker: `docker build -f worker/Dockerfile -t signal-worker .` und `docker run --rm --env-file worker/.env signal-worker`.
+
+### Robustheit im Betrieb
+
+- **Backoff je Adapter:** Liefert eine Börse dreimal in Folge keine Preise, wird sie 60 s ausgesetzt, danach
+  120 s, 240 s und so weiter bis höchstens 10 min. Die anderen Adapter laufen normal weiter. Das steht im
+  Heartbeat unter `skippedAdapters` und im Log.
+- **Kursalter:** Paper-Deals werden nicht gegen Kurse gefüllt, die älter als `MAX_QUOTE_AGE_MS` sind (Standard 30 s).
+  Der Deal schlägt dann mit klarer Meldung fehl, die Gelegenheit bleibt offen.
+- **Heartbeat:** `worker_heartbeats` enthält je Worker den letzten Zyklus mit Anzahl Preise, Routen, Dreiecken,
+  Fehlern und Dauer. Das Dashboard zeigt den Worker als offline, wenn der Heartbeat älter als 20 s ist.
+
+### CSV-Export
+
+Auf der Verlaufsseite gibt es "CSV exportieren": alle Messpunkte des gewählten Zeitraums und der gewählten Art
+als CSV, per Keyset-Pagination gestreamt, für Excel, R oder Python. Route: `/arbitrage/history/export?range=7d&kind=cross`.
+
+### CI
+
+`.github/workflows/ci.yml` lintet und baut das Dashboard und führt Typecheck und Tests des Workers aus, bei jedem
+Push und Pull Request.
 
 ### Konfiguration (Auszug, vollständig in `worker/.env.example`)
 

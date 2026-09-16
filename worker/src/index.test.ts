@@ -6,7 +6,8 @@ import { MockAdapter } from "./adapters/mock.ts";
 import type { MarketAdapter, Quote } from "./adapters/types.ts";
 import type { Mailer, OutgoingMail } from "./comms/mailer.ts";
 import type { Config } from "./config.ts";
-import { runCycle, wantedSymbols } from "./index.ts";
+import { processApprovedDeals } from "./execution/paper.ts";
+import { BACKOFF, newCycleState, runCycle, wantedSymbols } from "./index.ts";
 import { MemoryStore } from "./store/memory.ts";
 
 /** Adapter mit festen Kursen, um Dreiecke und Historie deterministisch zu testen. */
@@ -32,7 +33,7 @@ function testConfig(overrides: Partial<Config> = {}): Config {
     adapters: ["mock", "listings"], exchanges: [], symbols: ["BTC/EUR"], pollIntervalMs: 1000,
     tradeSizeQuote: 500, minNetSpreadBps: 10, autoPaperBps: 0, opportunityTtlMs: 15000, slippageBps: 5,
     transferModel: "prefunded", recordTicks: false, triangular: false, triangleStart: "",
-    spreadSampleIntervalMs: 0, spreadHistoryDays: 14, executionMode: "paper",
+    spreadSampleIntervalMs: 0, spreadHistoryDays: 14, maxQuoteAgeMs: 30000, executionMode: "paper",
     mailer: "console", mailFrom: "Bot <bot@example.com>", resendApiKey: "",
     smtp: { host: "", port: 587, user: "", pass: "", secure: false }, imap: null, inboxPollMs: 60000,
     mockMarkets: 2, mockSeed: 1, ...overrides,
@@ -199,7 +200,7 @@ test("Spread-Historie: alle bewerteten Routen werden im Takt gespeichert, Insera
   const markets = await store.syncMarkets([...a.markets(), ...b.markets(), ...listings.markets()]);
   const mailer = new RecordingMailer();
 
-  const state = { lastSampleAt: 0, lastCleanupAt: Date.now() };
+  const state = newCycleState();
   const s1 = await runCycle(cfg, store, [a, b, listings], markets, mailer, state);
   // Cross-Routen zwischen a und b: 2 Symbole × 2 Richtungen = 4; Dreiecke nur auf a: 2. Inserat-Routen fallen raus.
   assert.equal(s1.samples, 6, `samples ${s1.samples}`);
@@ -218,4 +219,67 @@ test("Spread-Historie: alle bewerteten Routen werden im Takt gespeichert, Insera
   state.lastSampleAt = 0;
   await runCycle(cfg, store, [a, b, listings], markets, mailer, state);
   assert.equal(store.spreadSamples.length, 6 + 6 - 1);
+});
+
+class FailingAdapter extends StaticAdapter {
+  calls = 0;
+  failing = true;
+  override async fetchQuotes(symbols: string[]): Promise<Quote[]> {
+    this.calls++;
+    if (this.failing) throw new Error("HTTP 503 von der Börse");
+    return super.fetchQuotes(symbols);
+  }
+}
+
+test("Ein Adapter mit wiederholten Fehlern wird ausgesetzt und nach Erholung wieder befragt", async () => {
+  const cfg = testConfig({ symbols: ["BTC/EUR"] });
+  const ok = new StaticAdapter("ok", 10, { "BTC/EUR": [50000, 50010] });
+  const bad = new FailingAdapter("bad", 10, { "BTC/EUR": [50000, 50010] });
+  const store = new MemoryStore();
+  const markets = await store.syncMarkets([...ok.markets(), ...bad.markets()]);
+  const mailer = new RecordingMailer();
+  const state = newCycleState();
+
+  for (let i = 0; i < BACKOFF.afterFailures; i++) {
+    const s = await runCycle(cfg, store, [ok, bad], markets, mailer, state);
+    assert.equal(s.adapterErrors.length, 1);
+    assert.equal(s.quotes, 1, "der gesunde Adapter liefert weiter");
+  }
+  assert.equal(bad.calls, BACKOFF.afterFailures);
+  const paused = await runCycle(cfg, store, [ok, bad], markets, mailer, state);
+  assert.deepEqual(paused.skippedAdapters, ["bad"]);
+  assert.equal(paused.adapterErrors.length, 0);
+  assert.equal(bad.calls, BACKOFF.afterFailures, "ausgesetzter Adapter wird nicht befragt");
+
+  // Pause vorbei und Börse erholt: Adapter liefert wieder, Zähler wird zurückgesetzt.
+  state.health.get("bad")!.skipUntil = 0;
+  bad.failing = false;
+  const back = await runCycle(cfg, store, [ok, bad], markets, mailer, state);
+  assert.equal(back.quotes, 2);
+  assert.equal(state.health.has("bad"), false);
+});
+
+test("Paper-Deals werden nicht gegen veraltete Kurse gefüllt", async () => {
+  const cfg = testConfig({ symbols: ["BTC/EUR"], minNetSpreadBps: 1 });
+  const a = new StaticAdapter("a", 0, { "BTC/EUR": [49990, 50000] });
+  const b = new StaticAdapter("b", 0, { "BTC/EUR": [50200, 50210] });
+  const store = new MemoryStore();
+  const markets = await store.syncMarkets([...a.markets(), ...b.markets()]);
+  await runCycle(cfg, store, [a, b], markets, new RecordingMailer());
+  const opp = [...store.opportunities.values()].find((o) => o.buy_market_id === "a" && o.sell_market_id === "b")!;
+  const deal = await store.createDeal({ opportunity_id: opp.id, mode: "paper", status: "approved" });
+
+  // Kurse künstlich altern lassen und direkt ausführen, ohne dass ein neuer Zyklus sie erneuert.
+  for (const p of store.prices.values()) p.ts = new Date(Date.now() - 120_000).toISOString();
+  await processApprovedDeals(store, markets, { slippageBps: 0, transferModel: "prefunded", maxQuoteAgeMs: 30_000 });
+  const failed = store.deals.get(deal.id)!;
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error ?? "", /ist 120 s alt/);
+  assert.equal(store.opportunities.get(opp.id)!.status, "open", "die Gelegenheit bleibt offen");
+
+  // Mit frischen Kursen geht es durch.
+  const retry = await store.createDeal({ opportunity_id: opp.id, mode: "paper", status: "approved" });
+  for (const p of store.prices.values()) p.ts = new Date().toISOString();
+  await processApprovedDeals(store, markets, { slippageBps: 0, transferModel: "prefunded", maxQuoteAgeMs: 30_000 });
+  assert.equal(store.deals.get(retry.id)!.status, "filled");
 });

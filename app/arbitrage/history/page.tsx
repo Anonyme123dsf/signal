@@ -3,6 +3,7 @@ import { fmtAgo, fmtBps, fmtNum, fmtPct, fmtTime } from "@/lib/arbitrage/format"
 import { getHistory, HISTORY_RANGES, routeKey, routeLabel, type HistoryRange } from "@/lib/arbitrage/queries";
 import { NotConfigured } from "../components/NotConfigured";
 import { MAX_SERIES, SpreadChart, type ChartSeries } from "../components/SpreadChart";
+import { AutoRefresh } from "../components/AutoRefresh";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +48,8 @@ export default async function HistoryPage({ searchParams }: { searchParams: Prom
 
   return (
     <>
+      {/* Die Aggregation über spread_samples ist teuer, deshalb nur jede Minute. */}
+      <AutoRefresh intervalMs={60000} />
       <section className="card flex flex-wrap items-end gap-x-6 gap-y-3">
         <div>
           <label>Zeitraum</label>
@@ -75,8 +78,9 @@ export default async function HistoryPage({ searchParams }: { searchParams: Prom
           </div>
           <button className="btn">Anwenden</button>
         </form>
-        <div className="text-xs text-[#7c7c9a] ml-auto">
-          Messfenster {fmtNum(data.bucketSeconds / 60, 0)} min · Stand {fmtAgo(new Date(data.fetchedAt).toISOString(), data.fetchedAt)}
+        <div className="text-xs text-[#7c7c9a] ml-auto flex items-center gap-3">
+          <span>Messfenster {fmtNum(data.bucketSeconds / 60, 0)} min · Stand {fmtAgo(new Date(data.fetchedAt).toISOString(), data.fetchedAt)}</span>
+          <a className="btn" href={`/arbitrage/history/export?range=${range}${kindFilter !== "all" ? `&kind=${kindFilter}` : ""}`}>CSV exportieren</a>
         </div>
       </section>
 

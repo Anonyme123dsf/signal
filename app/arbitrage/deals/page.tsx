@@ -2,6 +2,7 @@ import type { OrderFill } from "@/shared/types";
 import { fmtAmount, fmtBps, fmtEur, fmtPrice, fmtTime, shortId } from "@/lib/arbitrage/format";
 import { getDeals } from "@/lib/arbitrage/queries";
 import { NotConfigured } from "../components/NotConfigured";
+import { AutoRefresh } from "../components/AutoRefresh";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,8 @@ export default async function DealsPage() {
 
   return (
     <>
+      {/* Deals werden vom Worker im nächsten Zyklus ausgeführt. */}
+      <AutoRefresh intervalMs={5000} />
       <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="card"><div className="text-xs text-[#7c7c9a]">Deals gesamt</div><div className="text-lg font-medium">{deals.length}</div></div>
         <div className="card"><div className="text-xs text-[#7c7c9a]">Ausgeführt</div><div className="text-lg font-medium">{filled.length}</div></div>

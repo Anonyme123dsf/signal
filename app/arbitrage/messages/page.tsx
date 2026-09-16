@@ -2,6 +2,7 @@ import { fmtTime } from "@/lib/arbitrage/format";
 import { getMessages, type MessageWithContact } from "@/lib/arbitrage/queries";
 import { approveMessage, discardMessage } from "../actions";
 import { NotConfigured } from "../components/NotConfigured";
+import { AutoRefresh } from "../components/AutoRefresh";
 
 export const dynamic = "force-dynamic";
 
@@ -45,6 +46,8 @@ export default async function MessagesPage() {
 
   return (
     <>
+      {/* Neue Entwürfe und Antworten kommen selten, dafür reicht ein langsamer Takt. */}
+      <AutoRefresh intervalMs={10000} />
       <p className="text-sm text-[#9c9cba]">
         Der Worker legt für Gelegenheiten mit Inserat-Beteiligung Entwürfe an. Nichts wird ohne Freigabe verschickt.
         Antworten werden über die Kennung im Betreff (z. B. [SIG-4F2A9C]) per IMAP zugeordnet.

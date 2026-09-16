@@ -72,6 +72,8 @@ export interface Config {
   spreadSampleIntervalMs: number;
   /** Messpunkte, die älter sind, werden gelöscht. */
   spreadHistoryDays: number;
+  /** Paper-Deals werden nicht gegen Kurse gefüllt, die älter als so viele ms sind. */
+  maxQuoteAgeMs: number;
   /** Nur "paper" ist implementiert. */
   executionMode: "paper";
   mailer: MailerKind;
@@ -106,6 +108,7 @@ export function loadConfig(): Config {
     triangleStart: str("TRIANGLE_START", "").toUpperCase(),
     spreadSampleIntervalMs: num("SPREAD_SAMPLE_INTERVAL_MS", 60000),
     spreadHistoryDays: num("SPREAD_HISTORY_DAYS", 14),
+    maxQuoteAgeMs: num("MAX_QUOTE_AGE_MS", 30000),
     executionMode: oneOf("EXECUTION_MODE", ["paper"] as const, "paper"),
     mailer: oneOf("MAILER", ["console", "smtp", "resend"] as const, "console"),
     mailFrom: str("MAIL_FROM", "Signal Arbitrage <bot@example.com>"),

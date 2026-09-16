@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import "./arbitrage.css";
-import { AutoRefresh } from "./components/AutoRefresh";
 
 export const metadata: Metadata = {
   title: "Signal Arbitrage",
@@ -19,7 +18,6 @@ const NAV = [
 export default function ArbitrageLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="arb">
-      <AutoRefresh />
       <header className="border-b border-[#1e1e34] px-4 py-3 flex flex-wrap items-center gap-x-6 gap-y-2">
         <Link href="/" className="text-xs tracking-[0.3em] uppercase text-[#6a6a8a]">Signal</Link>
         <span className="text-sm font-medium">Arbitrage</span>

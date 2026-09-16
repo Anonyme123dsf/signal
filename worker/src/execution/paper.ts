@@ -7,6 +7,15 @@ import type { Store } from "../store/types.ts";
 export interface PaperParams {
   slippageBps: number;
   transferModel: "prefunded" | "withdraw";
+  /** Kurse, die älter sind, gelten als unbrauchbar; der Deal schlägt dann fehl statt gegen alte Daten zu füllen. */
+  maxQuoteAgeMs: number;
+}
+
+/** Fehlermeldung, wenn ein Kurs zu alt ist, sonst null. */
+function staleError(q: PriceRow, maxAgeMs: number, now: number): string | null {
+  const age = now - new Date(q.ts).getTime();
+  if (!(age > maxAgeMs)) return null;
+  return `Kurs ${q.symbol} auf ${q.market_id} ist ${Math.round(age / 1000)} s alt (Grenze ${Math.round(maxAgeMs / 1000)} s)`;
 }
 
 export interface SimulatedDeal {
@@ -27,7 +36,7 @@ interface CrossLegs {
  * Preise (aus der Gelegenheit), Börsen werden zum aktuellen Stand aus latest_prices
  * gefüllt. So fließt die Verzögerung zwischen Erkennen und Ausführen in den Paper-PnL ein.
  */
-function resolveCrossLegs(opp: OpportunityRow, prices: PriceRow[]): CrossLegs | { error: string } {
+function resolveCrossLegs(opp: OpportunityRow, prices: PriceRow[], maxQuoteAgeMs: number, now: number): CrossLegs | { error: string } {
   const live = (marketId: string) => prices.find((p) => p.market_id === marketId && p.symbol === opp.symbol);
 
   let buyPrice = Number(opp.buy_price);
@@ -35,6 +44,8 @@ function resolveCrossLegs(opp: OpportunityRow, prices: PriceRow[]): CrossLegs | 
   if (!opp.buy_listing_id) {
     const q = live(opp.buy_market_id);
     if (!q || q.ask == null) return { error: `Kein aktueller Ask für ${opp.symbol} auf ${opp.buy_market_id}` };
+    const stale = staleError(q, maxQuoteAgeMs, now);
+    if (stale) return { error: stale };
     buyPrice = Number(q.ask);
     if (q.ask_size != null && Number(q.ask_size) > 0) amount = Math.min(amount, Number(q.ask_size));
   }
@@ -43,6 +54,8 @@ function resolveCrossLegs(opp: OpportunityRow, prices: PriceRow[]): CrossLegs | 
   if (!opp.sell_listing_id) {
     const q = live(opp.sell_market_id);
     if (!q || q.bid == null) return { error: `Kein aktueller Bid für ${opp.symbol} auf ${opp.sell_market_id}` };
+    const stale = staleError(q, maxQuoteAgeMs, now);
+    if (stale) return { error: stale };
     sellPrice = Number(q.bid);
     if (q.bid_size != null && Number(q.bid_size) > 0) amount = Math.min(amount, Number(q.bid_size));
   }
@@ -105,6 +118,11 @@ export function simulateTriangleFills(opp: OpportunityRow, prices: PriceRow[], m
   );
   const missing = symbols.filter((s) => !quotes.has(s));
   if (missing.length) throw new Error(`Kein aktueller Kurs auf ${market.id} für ${missing.join(", ")}`);
+  const now = Date.now();
+  for (const q of quotes.values()) {
+    const stale = staleError(q, p.maxQuoteAgeMs, now);
+    if (stale) throw new Error(stale);
+  }
 
   const start = opp.legs[0]?.from_asset;
   const tri = findTriangles(symbols, start).find((t) => t.path.join("→") === opp.symbol);
@@ -138,7 +156,7 @@ export async function processApprovedDeals(store: Store, markets: Map<string, Ma
       if (opp.kind === "triangle") {
         result = simulateTriangleFills(opp, prices, markets, p);
       } else {
-        const legs = resolveCrossLegs(opp, prices);
+        const legs = resolveCrossLegs(opp, prices, p.maxQuoteAgeMs, Date.now());
         if ("error" in legs) throw new Error(legs.error);
         result = simulateCrossFills(opp, legs, markets, p);
       }

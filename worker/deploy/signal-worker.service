@@ -1,0 +1,26 @@
+# systemd-Unit für den Worker auf einem Linux-Server.
+# Installation:
+#   sudo cp signal-worker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now signal-worker
+#   journalctl -u signal-worker -f
+# Voraussetzung: Repo unter /opt/signal, `npm install` in /opt/signal/worker ausgeführt, .env angelegt.
+
+[Unit]
+Description=Signal Arbitrage Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=signal
+WorkingDirectory=/opt/signal/worker
+EnvironmentFile=/opt/signal/worker/.env
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=10
+# Bei Dauerfehlern nicht endlos schnell neu starten.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

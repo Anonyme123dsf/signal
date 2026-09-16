@@ -14,6 +14,8 @@ import type { Store } from "./store/types.ts";
 
 interface CycleStats {
   quotes: number;
+  /** Adapter, die wegen wiederholter Fehler gerade ausgesetzt sind. */
+  skippedAdapters: string[];
   /** Bewertete Routen insgesamt (Cross-Paare und Dreiecke), auch unprofitable. */
   routes: number;
   /** Routen über der Schwelle. */
@@ -26,10 +28,37 @@ interface CycleStats {
   durationMs: number;
 }
 
+export interface AdapterHealth {
+  failures: number;
+  /** Bis zu diesem Zeitpunkt (ms) wird der Adapter nicht befragt. */
+  skipUntil: number;
+}
+
 /** Zustand, der zwischen zwei Zyklen erhalten bleibt. */
 export interface CycleState {
   lastSampleAt: number;
   lastCleanupAt: number;
+  health: Map<string, AdapterHealth>;
+}
+
+export function newCycleState(now = Date.now()): CycleState {
+  return { lastSampleAt: 0, lastCleanupAt: now, health: new Map() };
+}
+
+/** Ab so vielen Fehlern in Folge wird ein Adapter ausgesetzt, mit wachsender Pause bis zur Obergrenze. */
+export const BACKOFF = { afterFailures: 3, baseMs: 60_000, maxMs: 600_000 };
+
+function recordFailure(state: CycleState, adapterId: string, now: number): number | null {
+  const h = state.health.get(adapterId) ?? { failures: 0, skipUntil: 0 };
+  h.failures++;
+  if (h.failures >= BACKOFF.afterFailures) {
+    const pause = Math.min(BACKOFF.maxMs, BACKOFF.baseMs * 2 ** (h.failures - BACKOFF.afterFailures));
+    h.skipUntil = now + pause;
+    state.health.set(adapterId, h);
+    return pause;
+  }
+  state.health.set(adapterId, h);
+  return null;
 }
 
 export function engineParams(cfg: Config): EngineParams {
@@ -71,20 +100,33 @@ export async function runCycle(
   adapters: MarketAdapter[],
   markets: Map<string, MarketRow>,
   mailer: ReturnType<typeof createMailer>,
-  state: CycleState = { lastSampleAt: 0, lastCleanupAt: Date.now() },
+  state: CycleState = newCycleState(),
 ): Promise<CycleStats> {
   const started = Date.now();
   const now = new Date();
   const adapterErrors: string[] = [];
 
-  const results = await Promise.allSettled(adapters.map((a) => a.fetchQuotes(wantedSymbols(cfg))));
+  // Adapter mit wiederholten Fehlern werden eine Weile ausgesetzt, damit ein gestörter Anbieter
+  // weder das Log flutet noch mit Rate-Limits die anderen ausbremst.
+  const active = adapters.filter((a) => (state.health.get(a.id)?.skipUntil ?? 0) <= now.getTime());
+  const skippedAdapters = adapters.filter((a) => !active.includes(a)).map((a) => a.id);
+
+  const results = await Promise.allSettled(active.map((a) => a.fetchQuotes(wantedSymbols(cfg))));
   const quotes: Quote[] = [];
   results.forEach((r, i) => {
-    if (r.status === "fulfilled") quotes.push(...r.value);
-    else {
+    const adapter = active[i];
+    if (r.status === "fulfilled") {
+      quotes.push(...r.value);
+      const h = state.health.get(adapter.id);
+      if (h?.failures) {
+        log.info(`Adapter ${adapter.id} liefert wieder Preise`);
+        state.health.delete(adapter.id);
+      }
+    } else {
       const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
-      adapterErrors.push(`${adapters[i].id}: ${msg}`);
-      log.warn(`Adapter ${adapters[i].id} lieferte keine Preise`, msg);
+      adapterErrors.push(`${adapter.id}: ${msg}`);
+      const pause = recordFailure(state, adapter.id, now.getTime());
+      log.warn(`Adapter ${adapter.id} lieferte keine Preise${pause ? `, wird ${Math.round(pause / 1000)} s ausgesetzt` : ""}`, msg);
     }
   });
 
@@ -117,7 +159,7 @@ export async function runCycle(
   }
 
   const expired = await store.expireOpportunities(new Date(now.getTime() - cfg.opportunityTtlMs));
-  await processApprovedDeals(store, markets, { slippageBps: cfg.slippageBps, transferModel: cfg.transferModel });
+  await processApprovedDeals(store, markets, { slippageBps: cfg.slippageBps, transferModel: cfg.transferModel, maxQuoteAgeMs: cfg.maxQuoteAgeMs });
   await processApprovedMessages(store, mailer);
 
   // Historie: alle bewerteten Börsenrouten, auch die unprofitablen. Inserate sind statisch und bleiben draußen.
@@ -138,7 +180,7 @@ export async function runCycle(
   }
 
   return {
-    quotes: quotes.length, routes: crossRoutes.length + triangleRoutes.length, candidates: candidates.length,
+    quotes: quotes.length, skippedAdapters, routes: crossRoutes.length + triangleRoutes.length, candidates: candidates.length,
     triangles: triangleRoutes.length, newOpportunities, expired, samples, adapterErrors, durationMs: Date.now() - started,
   };
 }
@@ -171,7 +213,7 @@ async function main() {
   let cycleActive = false;
   let lastInboxPoll = 0;
   let consecutiveErrors = 0;
-  const state: CycleState = { lastSampleAt: 0, lastCleanupAt: 0 };
+  const state = newCycleState(0);
 
   const shutdown = async (signal: string) => {
     if (!running) return;
