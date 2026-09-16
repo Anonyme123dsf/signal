@@ -45,10 +45,12 @@ while (!/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/.test(url)) {
   if (!/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/.test(url)) console.log("     Das sieht nicht nach einer Supabase-URL aus, bitte noch einmal.");
 }
 url = url.replace(/\/$/, "");
+// Beide Formate sind gültig: der alte service_role Key (JWT, beginnt mit eyJ) und der neue Secret Key (sb_secret_...).
+const looksLikeKey = (k) => k.startsWith("sb_secret_") || (k.startsWith("eyJ") && k.length > 100);
 let key = "";
-while (key.length < 40) {
-  key = await ask("2/3  service_role Key (langer Text, beginnt meist mit eyJ)", "", "key");
-  if (key.length < 40) console.log("     Der Key ist zu kurz. Bitte den service_role Key kopieren, nicht den anon Key.");
+while (!looksLikeKey(key)) {
+  key = await ask("2/3  Key: Project Settings → API Keys → service_role (eyJ…) oder Secret key (sb_secret_…)", "", "key");
+  if (!looksLikeKey(key)) console.log("     Das sieht nicht nach einem service_role oder sb_secret_ Key aus. Nicht den anon oder publishable Key nehmen.");
 }
 const password = await ask("3/3  Passwort für das Dashboard", randomBytes(9).toString("base64url"), "password");
 const alertEmail = await ask("Optional: deine E-Mail für Benachrichtigungen (Enter = keine)", "", "email");
