@@ -217,6 +217,37 @@ in `ADAPTERS` eintragen. Engine, Store und Dashboard bleiben unverändert.
 - Ein Bot, der sich selbst E-Mail-Konten anlegt, ist nicht vorgesehen. Stattdessen eine eigene Domain mit Postfach
   (SMTP/IMAP oder Resend) verwenden.
 
+## Pokémon-Deal-Prüfer
+
+Ein eigenständiges Werkzeug, das reale Verkaufschancen sucht statt nur Theorie: Es vergleicht ein Angebot mit dem
+bekannten Cardmarket-Wert einer Karte und sagt, ob sich der Kauf zum Weiterverkauf lohnt. Grundlage ist die kostenlose
+Pokémon-TCG-API (pokemontcg.io) mit europäischen Preisen. Ein Schlüssel ist nicht nötig; `POKEMONTCG_API_KEY` erhöht
+nur das Anfragelimit.
+
+Ein Angebot gilt als **Deal**, wenn drei Dinge zusammenkommen: der Preis liegt deutlich unter dem Marktwert, nach
+Verkaufsgebühr bleibt ein Gewinn, und die Karte wird nachweislich gehandelt (30-Tage-Schnitt vorhanden, Preis stabil,
+über der Bagatellgrenze). So werden günstige, aber unverkäufliche Karten aussortiert.
+
+```bash
+cd worker
+
+# Vorführung ohne Internet
+npm run pokemon -- --demo
+
+# Ein einzelnes Angebot gegen den echten Wert prüfen
+npm run pokemon -- --card "Charizard" --number 4 --price 150 --shipping 5
+
+# Viele Angebote aus einer Datei (Vorlage: worker/examples/pokemon-offers.json)
+npm run pokemon -- --file examples/pokemon-offers.json
+```
+
+Wichtige Optionen: `--min-discount` (Mindestrabatt in Prozent, Standard 20), `--min-value` (Karten darunter ignorieren,
+Standard 5), `--sell-fee` (Verkaufsgebühr in Prozent, Standard 5), `--json` (maschinenlesbare Ausgabe).
+
+Die Nachfrageprüfung nutzt bisher den 30-Tage-Preisverlauf als Näherung. Ein nächster Schritt wäre, echte
+Verkaufszahlen (eBay, verkaufte Artikel) einzubinden, um die Nachfrage direkt zu messen, und die Angebote automatisch
+von eBay zu holen statt sie in die Datei zu schreiben.
+
 ## Next.js
 
 Standardbefehle: `npm run dev`, `npm run build`, `npm run start`, `npm run lint`.

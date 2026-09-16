@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Dauerhaft laufender Worker: Preise sammeln, Spreads berechnen, Paper-Trades ausführen, Nachrichten versenden.",
+  "description": "Dauerhaft laufender Worker: Preise sammeln, Spreads berechnen, Paper-Trades ausf\u00fchren, Nachrichten versenden.",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "demo": "ADAPTERS=mock STORE=memory MAILER=console tsx src/index.ts",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "pokemon": "tsx src/pokemon/cli.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.96.0",

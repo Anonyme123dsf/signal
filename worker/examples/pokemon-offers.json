@@ -1,0 +1,5 @@
+[
+  { "query": "Charizard", "number": "4", "set": "base1", "price": 150, "shipping": 5, "url": "https://www.ebay.de/itm/...", "title": "Charizard Base Set gespielt" },
+  { "query": "Blastoise", "number": "2", "set": "base1", "price": 95, "shipping": 5, "url": "https://www.ebay.de/itm/...", "title": "Blastoise Base Set" },
+  { "query": "Umbreon", "number": "215", "price": 300, "shipping": 6, "url": "https://www.ebay.de/itm/...", "title": "Umbreon VMAX Alt Art" }
+]
