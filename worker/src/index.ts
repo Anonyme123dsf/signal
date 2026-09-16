@@ -1,11 +1,12 @@
-import type { MarketRow, PriceRow } from "../../shared/types.ts";
+import type { MarketRow, PriceRow, SpreadSampleRow } from "../../shared/types.ts";
 import { buildAdapters } from "./adapters/registry.ts";
 import type { MarketAdapter, Quote } from "./adapters/types.ts";
 import { createDraftsForOpportunity } from "./comms/drafts.ts";
 import { pollInbox } from "./comms/inbox.ts";
 import { createMailer, processApprovedMessages } from "./comms/mailer.ts";
 import { loadConfig, type Config } from "./config.ts";
-import { findOpportunities } from "./engine/spread.ts";
+import { evaluateAllPairs, filterOpportunities, quoteAsset, type Candidate, type EngineParams } from "./engine/spread.ts";
+import { crossSymbolsFor, evaluateAllTriangles } from "./engine/triangle.ts";
 import { processApprovedDeals } from "./execution/paper.ts";
 import { log } from "./log.ts";
 import { createStore } from "./store/index.ts";
@@ -13,18 +14,56 @@ import type { Store } from "./store/types.ts";
 
 interface CycleStats {
   quotes: number;
+  /** Bewertete Routen insgesamt (Cross-Paare und Dreiecke), auch unprofitable. */
+  routes: number;
+  /** Routen über der Schwelle. */
   candidates: number;
+  triangles: number;
   newOpportunities: number;
   expired: number;
+  samples: number;
   adapterErrors: string[];
   durationMs: number;
 }
 
+/** Zustand, der zwischen zwei Zyklen erhalten bleibt. */
+export interface CycleState {
+  lastSampleAt: number;
+  lastCleanupAt: number;
+}
+
+export function engineParams(cfg: Config): EngineParams {
+  return {
+    tradeSizeQuote: cfg.tradeSizeQuote, slippageBps: cfg.slippageBps,
+    transferModel: cfg.transferModel, minNetSpreadBps: cfg.minNetSpreadBps,
+  };
+}
+
+/** Konfigurierte Symbole plus die Kreuz-Paare, die Dreiecke brauchen. Jeder Adapter behält nur, was er kennt. */
+export function wantedSymbols(cfg: Config): string[] {
+  if (!cfg.triangular) return cfg.symbols;
+  return [...cfg.symbols, ...crossSymbolsFor(cfg.symbols)];
+}
+
+export function triangleStart(cfg: Config): string {
+  return cfg.triangleStart || quoteAsset(cfg.symbols[0] ?? "") || "EUR";
+}
+
+function toSample(c: Candidate, ts: string): SpreadSampleRow {
+  return {
+    ts, kind: c.kind, symbol: c.symbol, buy_market_id: c.buy_market_id, sell_market_id: c.sell_market_id,
+    gross_bps: c.gross_spread_bps, fees_bps: c.fees_bps, net_bps: c.net_spread_bps,
+    est_profit_quote: c.est_profit_quote, trade_size: c.trade_size,
+  };
+}
+
 /**
  * Ein Durchlauf der Hauptschleife:
- * 1. Preise aller Adapter holen  2. Börsenpreise speichern  3. Spreads berechnen
- * 4. Gelegenheiten anlegen/aktualisieren, Entwürfe und Auto-Paper-Deals erzeugen
+ * 1. Preise aller Adapter holen  2. Börsenpreise speichern
+ * 3. Alle Routen bewerten: Cross-Paare über Märkte hinweg und Dreiecke innerhalb einer Börse
+ * 4. Routen über der Schwelle als Gelegenheit anlegen/aktualisieren, Entwürfe und Auto-Paper-Deals erzeugen
  * 5. Abgelaufene Gelegenheiten schließen  6. Freigegebene Deals und Nachrichten abarbeiten
+ * 7. Im Sampling-Takt alle bewerteten Routen in die Historie schreiben, stündlich alte Messpunkte löschen
  */
 export async function runCycle(
   cfg: Config,
@@ -32,12 +71,13 @@ export async function runCycle(
   adapters: MarketAdapter[],
   markets: Map<string, MarketRow>,
   mailer: ReturnType<typeof createMailer>,
+  state: CycleState = { lastSampleAt: 0, lastCleanupAt: Date.now() },
 ): Promise<CycleStats> {
   const started = Date.now();
   const now = new Date();
   const adapterErrors: string[] = [];
 
-  const results = await Promise.allSettled(adapters.map((a) => a.fetchQuotes(cfg.symbols)));
+  const results = await Promise.allSettled(adapters.map((a) => a.fetchQuotes(wantedSymbols(cfg))));
   const quotes: Quote[] = [];
   results.forEach((r, i) => {
     if (r.status === "fulfilled") quotes.push(...r.value);
@@ -52,17 +92,23 @@ export async function runCycle(
   const exchangePrices: PriceRow[] = quotes.filter((q) => !q.listing_id).map(({ contact_id: _c, ...p }) => p);
   await store.savePrices(exchangePrices, cfg.recordTicks);
 
-  const candidates = findOpportunities(quotes, markets, {
-    tradeSizeQuote: cfg.tradeSizeQuote, slippageBps: cfg.slippageBps,
-    transferModel: cfg.transferModel, minNetSpreadBps: cfg.minNetSpreadBps,
-  });
+  const params = engineParams(cfg);
+  // Cross-Routen nur für die konfigurierten Symbole; Kreuz-Paare dienen allein den Dreiecken.
+  const crossRoutes = evaluateAllPairs(quotes.filter((q) => cfg.symbols.includes(q.symbol)), markets, params);
+  const triangleRoutes = cfg.triangular ? evaluateAllTriangles(quotes, markets, triangleStart(cfg), params) : [];
+  const candidates = filterOpportunities([...crossRoutes, ...triangleRoutes], cfg.minNetSpreadBps)
+    .sort((a, b) => b.net_spread_bps - a.net_spread_bps);
 
   let newOpportunities = 0;
   for (const c of candidates) {
     const { row, created } = await store.upsertOpportunity(c, now);
     if (!created) continue;
     newOpportunities++;
-    log.info(`Gelegenheit ${c.symbol}: ${c.buy_market_id} ${c.buy_price} → ${c.sell_market_id} ${c.sell_price} | netto ${c.net_spread_bps} bps, ca. ${c.est_profit_quote}`);
+    if (c.kind === "triangle") {
+      log.info(`Dreieck ${c.symbol} auf ${c.buy_market_id}: brutto ${c.gross_spread_bps} bps, netto ${c.net_spread_bps} bps, ca. ${c.est_profit_quote} bei Einsatz ${c.trade_size}`);
+    } else {
+      log.info(`Gelegenheit ${c.symbol}: ${c.buy_market_id} ${c.buy_price} → ${c.sell_market_id} ${c.sell_price} | netto ${c.net_spread_bps} bps, ca. ${c.est_profit_quote}`);
+    }
     if (c.buy_listing_id || c.sell_listing_id) await createDraftsForOpportunity(store, row, c, cfg.mailFrom);
     if (cfg.autoPaperBps > 0 && c.net_spread_bps >= cfg.autoPaperBps) {
       await store.createDeal({ opportunity_id: row.id, mode: "paper", status: "approved" });
@@ -74,14 +120,36 @@ export async function runCycle(
   await processApprovedDeals(store, markets, { slippageBps: cfg.slippageBps, transferModel: cfg.transferModel });
   await processApprovedMessages(store, mailer);
 
-  return { quotes: quotes.length, candidates: candidates.length, newOpportunities, expired, adapterErrors, durationMs: Date.now() - started };
+  // Historie: alle bewerteten Börsenrouten, auch die unprofitablen. Inserate sind statisch und bleiben draußen.
+  let samples = 0;
+  if (cfg.spreadSampleIntervalMs > 0 && now.getTime() - state.lastSampleAt >= cfg.spreadSampleIntervalMs) {
+    const ts = now.toISOString();
+    const rows = [...crossRoutes, ...triangleRoutes]
+      .filter((c) => !c.buy_listing_id && !c.sell_listing_id)
+      .map((c) => toSample(c, ts));
+    await store.saveSpreadSamples(rows);
+    samples = rows.length;
+    state.lastSampleAt = now.getTime();
+  }
+  if (cfg.spreadHistoryDays > 0 && now.getTime() - state.lastCleanupAt >= 3_600_000) {
+    const deleted = await store.deleteSpreadSamplesBefore(new Date(now.getTime() - cfg.spreadHistoryDays * 86_400_000));
+    if (deleted) log.info(`${deleted} alte Messpunkte der Spread-Historie gelöscht`);
+    state.lastCleanupAt = now.getTime();
+  }
+
+  return {
+    quotes: quotes.length, routes: crossRoutes.length + triangleRoutes.length, candidates: candidates.length,
+    triangles: triangleRoutes.length, newOpportunities, expired, samples, adapterErrors, durationMs: Date.now() - started,
+  };
 }
 
 async function main() {
   const cfg = loadConfig();
   log.info(`Worker ${cfg.workerId} startet`, {
     store: cfg.store, adapters: cfg.adapters, exchanges: cfg.adapters.includes("ccxt") ? cfg.exchanges : [],
-    symbols: cfg.symbols, pollIntervalMs: cfg.pollIntervalMs, executionMode: cfg.executionMode, mailer: cfg.mailer,
+    symbols: wantedSymbols(cfg), triangular: cfg.triangular, triangleStart: cfg.triangular ? triangleStart(cfg) : null,
+    pollIntervalMs: cfg.pollIntervalMs, spreadSampleIntervalMs: cfg.spreadSampleIntervalMs,
+    executionMode: cfg.executionMode, mailer: cfg.mailer,
   });
 
   const store = createStore(cfg);
@@ -103,6 +171,7 @@ async function main() {
   let cycleActive = false;
   let lastInboxPoll = 0;
   let consecutiveErrors = 0;
+  const state: CycleState = { lastSampleAt: 0, lastCleanupAt: 0 };
 
   const shutdown = async (signal: string) => {
     if (!running) return;
@@ -118,7 +187,7 @@ async function main() {
     if (!running || cycleActive) return;
     cycleActive = true;
     try {
-      const stats = await runCycle(cfg, store, live, markets, mailer);
+      const stats = await runCycle(cfg, store, live, markets, mailer, state);
       consecutiveErrors = 0;
       if (cfg.imap && Date.now() - lastInboxPoll >= cfg.inboxPollMs) {
         lastInboxPoll = Date.now();
@@ -130,7 +199,11 @@ async function main() {
       }
       await store.heartbeat({
         worker_id: cfg.workerId, last_seen: new Date().toISOString(),
-        status: { ...stats, adapters: live.map((a) => a.id), symbols: cfg.symbols, executionMode: cfg.executionMode, mailer: mailer.kind },
+        status: {
+          ...stats, adapters: live.map((a) => a.id), symbols: wantedSymbols(cfg), triangular: cfg.triangular,
+          minNetSpreadBps: cfg.minNetSpreadBps, autoPaperBps: cfg.autoPaperBps, tradeSizeQuote: cfg.tradeSizeQuote,
+          spreadSampleIntervalMs: cfg.spreadSampleIntervalMs, executionMode: cfg.executionMode, mailer: mailer.kind,
+        },
       });
       log.debug("Zyklus", stats);
     } catch (err) {

@@ -1,6 +1,6 @@
 import type {
   ContactRow, DealRow, DealStatus, ListingRow, MarketRow, MessageRow, MessageStatus,
-  OpportunityRow, OpportunityStatus, PriceRow, WorkerHeartbeatRow,
+  OpportunityRow, OpportunityStatus, PriceRow, SpreadSampleRow, WorkerHeartbeatRow,
 } from "../../../shared/types.ts";
 import type { Candidate } from "../engine/spread.ts";
 
@@ -40,4 +40,7 @@ export interface Store {
   hasOutboundMessageForListing(listingId: string): Promise<boolean>;
   findOutboundByThreadTag(tag: string): Promise<MessageRow | null>;
   heartbeat(row: WorkerHeartbeatRow): Promise<void>;
+  saveSpreadSamples(rows: SpreadSampleRow[]): Promise<void>;
+  /** Löscht Messpunkte, die älter als `before` sind. Liefert die Anzahl. */
+  deleteSpreadSamplesBefore(before: Date): Promise<number>;
 }

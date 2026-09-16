@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   ContactRow, DealRow, DealStatus, ListingRow, MarketRow, MessageRow, MessageStatus,
-  OpportunityRow, OpportunityStatus, PriceRow, WorkerHeartbeatRow,
+  OpportunityRow, OpportunityStatus, PriceRow, SpreadSampleRow, WorkerHeartbeatRow,
 } from "../../../shared/types.ts";
 import { candidateKey, type Candidate } from "../engine/spread.ts";
 import type { NewDeal, NewMessage, OpportunityUpsertResult, Store } from "./types.ts";
@@ -17,6 +17,7 @@ export class MemoryStore implements Store {
   deals = new Map<string, DealRow>();
   messages = new Map<string, MessageRow>();
   heartbeats = new Map<string, WorkerHeartbeatRow>();
+  spreadSamples: SpreadSampleRow[] = [];
 
   async init(): Promise<void> {}
 
@@ -54,18 +55,19 @@ export class MemoryStore implements Store {
         Object.assign(row, {
           buy_price: c.buy_price, sell_price: c.sell_price, trade_size: c.trade_size,
           gross_spread_bps: c.gross_spread_bps, fees_bps: c.fees_bps, net_spread_bps: c.net_spread_bps,
-          est_profit_quote: c.est_profit_quote, last_seen: ts,
+          est_profit_quote: c.est_profit_quote, last_seen: ts, legs: c.legs,
           max_net_spread_bps: Math.max(row.max_net_spread_bps, c.net_spread_bps),
         });
         return { row, created: false };
       }
     }
     const row: OpportunityRow = {
-      id: randomUUID(), symbol: c.symbol, buy_market_id: c.buy_market_id, sell_market_id: c.sell_market_id,
+      id: randomUUID(), kind: c.kind, symbol: c.symbol, buy_market_id: c.buy_market_id, sell_market_id: c.sell_market_id,
       buy_price: c.buy_price, sell_price: c.sell_price, trade_size: c.trade_size,
       gross_spread_bps: c.gross_spread_bps, fees_bps: c.fees_bps, net_spread_bps: c.net_spread_bps,
       est_profit_quote: c.est_profit_quote, status: "open", first_seen: ts, last_seen: ts,
       max_net_spread_bps: c.net_spread_bps, buy_listing_id: c.buy_listing_id, sell_listing_id: c.sell_listing_id,
+      legs: c.legs,
     };
     this.opportunities.set(row.id, row);
     return { row, created: true };
@@ -94,7 +96,7 @@ export class MemoryStore implements Store {
   async createDeal(d: NewDeal): Promise<DealRow> {
     const ts = new Date().toISOString();
     const row: DealRow = {
-      id: randomUUID(), ...d, buy_order: null, sell_order: null, realized_pnl_quote: null, error: null,
+      id: randomUUID(), ...d, buy_order: null, sell_order: null, fills: [], realized_pnl_quote: null, error: null,
       created_at: ts, updated_at: ts,
     };
     this.deals.set(row.id, row);
@@ -139,6 +141,17 @@ export class MemoryStore implements Store {
 
   async heartbeat(row: WorkerHeartbeatRow): Promise<void> {
     this.heartbeats.set(row.worker_id, row);
+  }
+
+  async saveSpreadSamples(rows: SpreadSampleRow[]): Promise<void> {
+    this.spreadSamples.push(...rows);
+  }
+
+  async deleteSpreadSamplesBefore(before: Date): Promise<number> {
+    const keep = this.spreadSamples.filter((r) => new Date(r.ts) >= before);
+    const n = this.spreadSamples.length - keep.length;
+    this.spreadSamples = keep;
+    return n;
   }
 
   /** Testhilfe: Inserat samt Kontakt anlegen. */

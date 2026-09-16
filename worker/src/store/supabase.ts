@@ -1,7 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type {
   ContactRow, DealRow, DealStatus, ListingRow, MarketRow, MessageRow, MessageStatus,
-  OpportunityRow, OpportunityStatus, PriceRow, WorkerHeartbeatRow,
+  OpportunityRow, OpportunityStatus, PriceRow, SpreadSampleRow, WorkerHeartbeatRow,
 } from "../../../shared/types.ts";
 import type { Candidate } from "../engine/spread.ts";
 import type { NewDeal, NewMessage, OpportunityUpsertResult, Store } from "./types.ts";
@@ -86,7 +86,7 @@ export class SupabaseStore implements Store {
     const values = {
       buy_price: c.buy_price, sell_price: c.sell_price, trade_size: c.trade_size,
       gross_spread_bps: c.gross_spread_bps, fees_bps: c.fees_bps, net_spread_bps: c.net_spread_bps,
-      est_profit_quote: c.est_profit_quote, last_seen: ts,
+      est_profit_quote: c.est_profit_quote, last_seen: ts, legs: c.legs,
     };
     if (existing) {
       const row = existing as OpportunityRow;
@@ -96,7 +96,7 @@ export class SupabaseStore implements Store {
       return { row: { ...row, ...patch }, created: false };
     }
     const insert = {
-      ...values, symbol: c.symbol, buy_market_id: c.buy_market_id, sell_market_id: c.sell_market_id,
+      ...values, kind: c.kind, symbol: c.symbol, buy_market_id: c.buy_market_id, sell_market_id: c.sell_market_id,
       status: "open", first_seen: ts, max_net_spread_bps: c.net_spread_bps,
       buy_listing_id: c.buy_listing_id, sell_listing_id: c.sell_listing_id,
     };
@@ -174,5 +174,17 @@ export class SupabaseStore implements Store {
   async heartbeat(row: WorkerHeartbeatRow): Promise<void> {
     const { error } = await this.db.from("worker_heartbeats").upsert(row, { onConflict: "worker_id" });
     if (error) fail("heartbeat schreiben", error);
+  }
+
+  async saveSpreadSamples(rows: SpreadSampleRow[]): Promise<void> {
+    if (!rows.length) return;
+    const { error } = await this.db.from("spread_samples").insert(rows);
+    if (error) fail("spread_samples schreiben", error);
+  }
+
+  async deleteSpreadSamplesBefore(before: Date): Promise<number> {
+    const { data, error } = await this.db.from("spread_samples").delete().lt("ts", before.toISOString()).select("id");
+    if (error) fail("spread_samples aufräumen", error);
+    return data?.length ?? 0;
   }
 }

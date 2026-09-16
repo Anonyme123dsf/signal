@@ -1,8 +1,19 @@
-import { fmtBps, fmtEur, fmtNum, fmtTime, shortId } from "@/lib/arbitrage/format";
+import type { OrderFill } from "@/shared/types";
+import { fmtAmount, fmtBps, fmtEur, fmtPrice, fmtTime, shortId } from "@/lib/arbitrage/format";
 import { getDeals } from "@/lib/arbitrage/queries";
 import { NotConfigured } from "../components/NotConfigured";
 
 export const dynamic = "force-dynamic";
+
+const SIDE: Record<OrderFill["side"], string> = { buy: "kaufen", sell: "verkaufen" };
+
+/** Gebühren je Währung zusammenfassen: "0,50 EUR + 0,000002 BTC". */
+function fmtFees(fills: OrderFill[]): string {
+  const byAsset = new Map<string, number>();
+  for (const f of fills) byAsset.set(f.fee_asset, (byAsset.get(f.fee_asset) ?? 0) + Number(f.fee_quote));
+  if (!byAsset.size) return "–";
+  return [...byAsset].map(([asset, v]) => fmtAmount(v, asset)).join(" + ");
+}
 
 const STATUS_LABEL: Record<string, string> = {
   pending_approval: "wartet auf Freigabe", approved: "freigegeben", executing: "wird ausgeführt",
@@ -31,26 +42,36 @@ export default async function DealsPage() {
         ) : (
           <table>
             <thead>
-              <tr><th>Zeit</th><th>Deal</th><th>Symbol</th><th>Route</th><th>Modus</th><th>Status</th>
-                <th className="num">Kauf</th><th className="num">Verkauf</th><th className="num">Menge</th><th className="num">Gebühren</th><th className="num">PnL</th><th className="num">Erwartet</th></tr>
+              <tr><th>Zeit</th><th>Deal</th><th>Art</th><th>Symbol / Pfad</th><th>Ausführungen</th><th>Modus</th><th>Status</th>
+                <th className="num">Gebühren</th><th className="num">PnL</th><th className="num">Erwartet</th></tr>
             </thead>
             <tbody>
               {deals.map((d) => {
                 const o = d.opportunity;
-                const fees = (d.buy_order?.fee_quote ?? 0) + (d.sell_order?.fee_quote ?? 0);
+                const fills: OrderFill[] = d.fills?.length ? d.fills : [d.buy_order, d.sell_order].filter((f): f is OrderFill => Boolean(f));
                 const pnlD = Number(d.realized_pnl_quote ?? 0);
                 return (
                   <tr key={d.id}>
                     <td className="whitespace-nowrap text-[#9c9cba]">{fmtTime(d.created_at)}</td>
                     <td className="num">{shortId(d.id)}</td>
-                    <td className="font-medium">{o?.symbol ?? "–"}</td>
-                    <td>{o ? `${o.buy_market_id} → ${o.sell_market_id}` : "–"}</td>
+                    <td><span className="badge">{o?.kind === "triangle" ? "Dreieck" : "Cross"}</span></td>
+                    <td className="font-medium whitespace-nowrap">{o?.symbol ?? "–"}</td>
+                    <td>
+                      {fills.length === 0 ? (
+                        <span className="text-[#7c7c9a]">{o ? (o.kind === "triangle" ? `auf ${o.buy_market_id}` : `${o.buy_market_id} → ${o.sell_market_id}`) : "–"}</span>
+                      ) : (
+                        <ol className="text-xs space-y-0.5">
+                          {fills.map((f, i) => (
+                            <li key={i}>
+                              <span className="text-[#9c9cba]">{f.market_id}</span> {f.symbol} {SIDE[f.side]} <span className="num">{fmtAmount(f.amount)}</span> @ <span className="num">{fmtPrice(f.price)}</span>
+                            </li>
+                          ))}
+                        </ol>
+                      )}
+                    </td>
                     <td><span className="badge">{d.mode}</span></td>
                     <td>{STATUS_LABEL[d.status] ?? d.status}{d.error && <div className="text-xs text-[#f87171]">{d.error}</div>}</td>
-                    <td className="num">{fmtNum(d.buy_order?.price)}</td>
-                    <td className="num">{fmtNum(d.sell_order?.price)}</td>
-                    <td className="num">{fmtNum(d.buy_order?.amount ?? o?.trade_size, 6)}</td>
-                    <td className="num">{d.status === "filled" ? fmtEur(fees) : "–"}</td>
+                    <td className="num text-xs">{d.status === "filled" ? fmtFees(fills) : "–"}</td>
                     <td className={`num font-medium ${d.status !== "filled" ? "" : pnlD >= 0 ? "text-[#4ade80]" : "text-[#f87171]"}`}>{d.status === "filled" ? fmtEur(pnlD) : "–"}</td>
                     <td className="num text-[#9c9cba]">{o ? `${fmtEur(o.est_profit_quote)} (${fmtBps(o.net_spread_bps)})` : "–"}</td>
                   </tr>

@@ -25,9 +25,15 @@ test("Netto-Spread zieht Taker-Gebühren beider Seiten ab", () => {
   assert.ok(Math.abs(c.gross_spread_bps - c.fees_bps - c.net_spread_bps) < 1e-9);
 });
 
-test("Kein Kandidat, wenn Bid nicht über Ask liegt oder Preise fehlen", () => {
-  assert.equal(evaluatePair(quote("a", 99, 100), quote("b", 100, 101), market("a", 0), market("b", 0), params), null);
+test("Bid unter Ask ergibt negativen Spread (für die Historie), fehlende Preise ergeben keinen Kandidaten", () => {
+  const flat = evaluatePair(quote("a", 99, 100), quote("b", 100, 101), market("a", 10), market("b", 10), params);
+  assert.ok(flat);
+  assert.equal(flat.gross_spread_bps, 0);
+  assert.ok(flat.net_spread_bps < 0);
   assert.equal(evaluatePair(quote("a", 99, null), quote("b", 105, 106), market("a", 0), market("b", 0), params), null);
+  // findOpportunities filtert solche Routen heraus.
+  const markets = new Map([["a", market("a", 10)], ["b", market("b", 10)]]);
+  assert.deepEqual(findOpportunities([quote("a", 99, 100), quote("b", 100, 101)], markets, params), []);
 });
 
 test("Slippage-Aufschlag und Abhebegebühr senken den Netto-Spread", () => {

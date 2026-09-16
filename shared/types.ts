@@ -33,14 +33,34 @@ export interface PriceRow {
 
 export type OpportunityStatus = "open" | "expired" | "dismissed" | "executed";
 
+/** cross: Kauf auf Markt A, Verkauf auf Markt B. triangle: drei Legs auf einer Börse, z. B. EUR→BTC→ETH→EUR. */
+export type OpportunityKind = "cross" | "triangle";
+
+/** Ein Schritt einer Gelegenheit: Menge `amount_in` in `from_asset` wird zu `amount_out` in `to_asset`. */
+export interface Leg {
+  market_id: string;
+  symbol: string;
+  side: "buy" | "sell";
+  /** Ausführungspreis inklusive Slippage-Aufschlag. */
+  price: number;
+  from_asset: string;
+  to_asset: string;
+  amount_in: number;
+  amount_out: number;
+}
+
 export interface OpportunityRow {
   id: string;
+  kind: OpportunityKind;
+  /** cross: Handelspaar wie "BTC/EUR". triangle: Pfad wie "EUR→BTC→ETH→EUR". */
   symbol: string;
   buy_market_id: string;
   sell_market_id: string;
+  /** cross: Ask am Kaufmarkt. triangle: 1 (eine Einheit Startwährung). */
   buy_price: number;
+  /** cross: Bid am Verkaufsmarkt. triangle: Brutto-Multiplikator des Pfads, z. B. 1.0032. */
   sell_price: number;
-  /** Handelsmenge in Basiswährung (z. B. 0.01 BTC). */
+  /** cross: Handelsmenge in Basiswährung (z. B. 0.01 BTC). triangle: Startbetrag in der Startwährung (z. B. 500 EUR). */
   trade_size: number;
   gross_spread_bps: number;
   fees_bps: number;
@@ -54,6 +74,8 @@ export interface OpportunityRow {
   max_net_spread_bps: number;
   buy_listing_id: string | null;
   sell_listing_id: string | null;
+  /** Alle Schritte mit Preisen und Mengen, bei cross zwei, bei triangle drei. */
+  legs: Leg[];
 }
 
 export type DealMode = "paper" | "live";
@@ -70,8 +92,11 @@ export interface OrderFill {
   symbol: string;
   side: "buy" | "sell";
   price: number;
+  /** Menge in Basiswährung des Handelspaars. */
   amount: number;
+  /** Gebühr in `fee_asset`, der Quote-Währung des Handelspaars. */
   fee_quote: number;
+  fee_asset: string;
   ts: string;
 }
 
@@ -80,8 +105,11 @@ export interface DealRow {
   opportunity_id: string;
   mode: DealMode;
   status: DealStatus;
+  /** Bei cross-Deals gesetzt; bei triangle-Deals stehen alle Schritte in `fills`. */
   buy_order: OrderFill | null;
   sell_order: OrderFill | null;
+  /** Alle Ausführungen in Reihenfolge, für beide Arten befüllt. */
+  fills: OrderFill[];
   realized_pnl_quote: number | null;
   error: string | null;
   created_at: string;
@@ -135,6 +163,51 @@ export interface MessageRow {
   error: string | null;
   created_at: string;
   sent_at: string | null;
+}
+
+/** Ein Messpunkt der Spread-Historie. Enthält auch negative Netto-Spreads, damit die Verteilung sichtbar wird. */
+export interface SpreadSampleRow {
+  id?: number;
+  ts: string;
+  kind: OpportunityKind;
+  symbol: string;
+  buy_market_id: string;
+  sell_market_id: string;
+  gross_bps: number;
+  fees_bps: number;
+  net_bps: number;
+  est_profit_quote: number;
+  trade_size: number;
+}
+
+/** Ergebnis der Postgres-Funktion spread_route_stats. */
+export interface SpreadRouteStats {
+  kind: OpportunityKind;
+  symbol: string;
+  buy_market_id: string;
+  sell_market_id: string;
+  samples: number;
+  avg_net: number;
+  max_net: number;
+  p50_net: number;
+  p90_net: number;
+  /** Anteil der Messpunkte mit Netto-Spread über 0 (0..1). */
+  share_positive: number;
+  /** Anteil der Messpunkte über der übergebenen Schwelle (0..1). */
+  share_above: number;
+  last_net: number;
+  last_ts: string;
+}
+
+/** Ergebnis der Postgres-Funktion spread_route_series. */
+export interface SpreadSeriesPoint {
+  bucket: string;
+  kind: OpportunityKind;
+  symbol: string;
+  buy_market_id: string;
+  sell_market_id: string;
+  avg_net: number;
+  max_net: number;
 }
 
 export interface WorkerHeartbeatRow {

@@ -37,3 +37,28 @@ export function fmtTime(iso: string | null | undefined): string {
 export function shortId(id: string): string {
   return id.slice(0, 8);
 }
+
+export function fmtPct(share: number | string | null | undefined): string {
+  if (share === null || share === undefined) return "–";
+  const n = Number(share);
+  return Number.isFinite(n) ? `${new Intl.NumberFormat("de-DE", { maximumFractionDigits: 1 }).format(n * 100)} %` : "–";
+}
+
+/** Preis mit passender Genauigkeit: 60.000 für BTC/EUR, 0,05012 für ETH/BTC. */
+export function fmtPrice(v: number | string | null | undefined): string {
+  if (v === null || v === undefined) return "–";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "–";
+  const digits = n >= 100 ? 2 : n >= 1 ? 4 : 6;
+  return new Intl.NumberFormat("de-DE", { minimumFractionDigits: 0, maximumFractionDigits: digits }).format(n);
+}
+
+/** Menge in Basiswährung mit passender Genauigkeit. */
+export function fmtAmount(v: number | string | null | undefined, asset = ""): string {
+  if (v === null || v === undefined) return "–";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "–";
+  const digits = n >= 1000 ? 2 : n >= 1 ? 4 : 6;
+  const s = new Intl.NumberFormat("de-DE", { maximumFractionDigits: digits }).format(n);
+  return asset ? `${s} ${asset}` : s;
+}

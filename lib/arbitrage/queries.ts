@@ -1,5 +1,6 @@
 import type {
-  ContactRow, DealRow, ListingRow, MarketRow, MessageRow, OpportunityRow, PriceRow, WorkerHeartbeatRow,
+  ContactRow, DealRow, ListingRow, MarketRow, MessageRow, OpportunityRow, PriceRow,
+  SpreadRouteStats, SpreadSeriesPoint, WorkerHeartbeatRow,
 } from "@/shared/types";
 import { getServiceClient } from "./supabase";
 
@@ -64,4 +65,53 @@ export async function getListings(): Promise<{ listings: ListingWithContact[]; m
     db.from("markets").select("*").order("id"),
   ]);
   return { listings: must(listings, "listings") as ListingWithContact[], markets: must(markets, "markets") };
+}
+
+export const HISTORY_RANGES = {
+  "1h": { label: "1 Stunde", ms: 3_600_000, bucketSeconds: 60 },
+  "6h": { label: "6 Stunden", ms: 6 * 3_600_000, bucketSeconds: 300 },
+  "24h": { label: "24 Stunden", ms: 24 * 3_600_000, bucketSeconds: 900 },
+  "7d": { label: "7 Tage", ms: 7 * 86_400_000, bucketSeconds: 3_600 },
+} as const;
+export type HistoryRange = keyof typeof HISTORY_RANGES;
+
+export interface History {
+  fetchedAt: number;
+  since: string;
+  range: HistoryRange;
+  bucketSeconds: number;
+  thresholdBps: number;
+  stats: SpreadRouteStats[];
+  series: SpreadSeriesPoint[];
+  markets: MarketRow[];
+}
+
+/** Kennzahlen und Zeitreihe der Spread-Historie über die Postgres-Funktionen aus Migration 0002. */
+export async function getHistory(range: HistoryRange, thresholdBps: number): Promise<History | null> {
+  const db = getServiceClient();
+  if (!db) return null;
+  const fetchedAt = Date.now();
+  const preset = HISTORY_RANGES[range];
+  const since = new Date(fetchedAt - preset.ms).toISOString();
+  const [stats, series, markets] = await Promise.all([
+    db.rpc("spread_route_stats", { since, threshold_bps: thresholdBps }),
+    db.rpc("spread_route_series", { since, bucket_seconds: preset.bucketSeconds }),
+    db.from("markets").select("*").order("id"),
+  ]);
+  return {
+    fetchedAt, since, range, bucketSeconds: preset.bucketSeconds, thresholdBps,
+    stats: must(stats, "spread_route_stats") as SpreadRouteStats[],
+    series: must(series, "spread_route_series") as SpreadSeriesPoint[],
+    markets: must(markets, "markets"),
+  };
+}
+
+/** Lesbarer Name einer Route, z. B. "BTC/EUR: kraken → bitvavo" oder "EUR→BTC→ETH→EUR auf kraken". */
+export function routeLabel(r: { kind: string; symbol: string; buy_market_id: string; sell_market_id: string }, markets: MarketRow[] = []): string {
+  const name = (id: string) => markets.find((m) => m.id === id)?.name ?? id;
+  return r.kind === "triangle" ? `${r.symbol} auf ${name(r.buy_market_id)}` : `${r.symbol}: ${name(r.buy_market_id)} → ${name(r.sell_market_id)}`;
+}
+
+export function routeKey(r: { symbol: string; buy_market_id: string; sell_market_id: string }): string {
+  return `${r.symbol}|${r.buy_market_id}|${r.sell_market_id}`;
 }

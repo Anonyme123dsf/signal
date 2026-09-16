@@ -1,7 +1,8 @@
-import { fmtAgo, fmtBps, fmtEur, fmtNum } from "@/lib/arbitrage/format";
+import { fmtAgo, fmtAmount, fmtBps, fmtEur, fmtNum } from "@/lib/arbitrage/format";
 import { getOverview } from "@/lib/arbitrage/queries";
 import { createPaperDeal, dismissOpportunity } from "./actions";
 import { NotConfigured } from "./components/NotConfigured";
+import { RouteCell } from "./components/RouteCell";
 
 export const dynamic = "force-dynamic";
 
@@ -31,8 +32,10 @@ export default async function OverviewPage() {
         </div>
         <div className="card">
           <div className="text-xs text-[#7c7c9a]">Letzter Zyklus</div>
-          <div className="text-lg font-medium">{fmtNum(status.quotes as number, 0)} Preise</div>
-          <div className="text-xs text-[#7c7c9a]">{fmtNum(status.candidates as number, 0)} Kandidaten, {fmtNum(status.durationMs as number, 0)} ms</div>
+          <div className="text-lg font-medium">{fmtNum(status.routes as number, 0)} Routen</div>
+          <div className="text-xs text-[#7c7c9a]">
+            {fmtNum(status.quotes as number, 0)} Preise, {fmtNum(status.triangles as number, 0)} Dreiecke, {fmtNum(status.durationMs as number, 0)} ms
+          </div>
         </div>
         <div className="card">
           <div className="text-xs text-[#7c7c9a]">Offene Gelegenheiten</div>
@@ -82,23 +85,30 @@ export default async function OverviewPage() {
       <section className="card overflow-x-auto">
         <h2 className="text-sm font-medium mb-3">Offene Gelegenheiten (nach Netto-Spread)</h2>
         {data.openOpportunities.length === 0 ? (
-          <p className="text-sm text-[#7c7c9a]">Gerade keine Gelegenheit über der Schwelle MIN_NET_SPREAD_BPS.</p>
+          <p className="text-sm text-[#7c7c9a]">
+            Gerade keine Gelegenheit über der Schwelle MIN_NET_SPREAD_BPS
+            {typeof status.minNetSpreadBps === "number" ? ` (${fmtNum(status.minNetSpreadBps, 0)} bps)` : ""}. Wie oft es welche gibt, zeigt der Verlauf.
+          </p>
         ) : (
           <table>
             <thead>
               <tr>
-                <th>Symbol</th><th>Kaufen bei</th><th>Verkaufen bei</th>
-                <th className="num">Menge</th><th className="num">Brutto</th><th className="num">Kosten</th><th className="num">Netto</th>
+                <th>Art</th><th>Symbol / Pfad</th><th>Route</th>
+                <th className="num">Einsatz</th><th className="num">Brutto</th><th className="num">Kosten</th><th className="num">Netto</th>
                 <th className="num">Erw. Gewinn</th><th className="num">Max. Netto</th><th>Zuletzt</th><th></th>
               </tr>
             </thead>
             <tbody>
               {data.openOpportunities.map((o) => (
                 <tr key={o.id}>
-                  <td className="font-medium">{o.symbol}</td>
-                  <td>{marketById.get(o.buy_market_id)?.name ?? o.buy_market_id}{o.buy_listing_id && <span className="badge ml-1">Inserat</span>}<br /><span className="num text-[#9c9cba]">{fmtNum(o.buy_price)}</span></td>
-                  <td>{marketById.get(o.sell_market_id)?.name ?? o.sell_market_id}{o.sell_listing_id && <span className="badge ml-1">Inserat</span>}<br /><span className="num text-[#9c9cba]">{fmtNum(o.sell_price)}</span></td>
-                  <td className="num">{fmtNum(o.trade_size, 6)}</td>
+                  <td><span className="badge">{o.kind === "triangle" ? "Dreieck" : "Cross"}</span></td>
+                  <td className="font-medium whitespace-nowrap">{o.symbol}</td>
+                  <td><RouteCell o={o} markets={marketById} /></td>
+                  <td className="num">
+                    {o.kind === "triangle"
+                      ? fmtAmount(o.trade_size, o.legs[0]?.from_asset ?? "")
+                      : fmtAmount(o.trade_size, o.symbol.split("/")[0])}
+                  </td>
                   <td className="num">{fmtBps(o.gross_spread_bps)}</td>
                   <td className="num text-[#f87171]">{fmtBps(-Number(o.fees_bps))}</td>
                   <td className="num text-[#4ade80] font-medium">{fmtBps(o.net_spread_bps)}</td>

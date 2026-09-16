@@ -64,6 +64,14 @@ export interface Config {
   /** prefunded: Bestand liegt auf beiden Börsen, kein Transfer. withdraw: Abhebegebühr wird eingerechnet. */
   transferModel: TransferModel;
   recordTicks: boolean;
+  /** Dreiecks-Arbitrage innerhalb einer Börse bewerten. */
+  triangular: boolean;
+  /** Startwährung der Dreiecke, z. B. EUR. Leer = Quote-Währung des ersten Symbols. */
+  triangleStart: string;
+  /** Alle so viele ms wird jede bewertete Route in spread_samples geschrieben. 0 = aus. */
+  spreadSampleIntervalMs: number;
+  /** Messpunkte, die älter sind, werden gelöscht. */
+  spreadHistoryDays: number;
   /** Nur "paper" ist implementiert. */
   executionMode: "paper";
   mailer: MailerKind;
@@ -94,6 +102,10 @@ export function loadConfig(): Config {
     slippageBps: num("SLIPPAGE_BPS", 5),
     transferModel: oneOf("TRANSFER_MODEL", ["prefunded", "withdraw"] as const, "prefunded"),
     recordTicks: bool("RECORD_TICKS", false),
+    triangular: bool("TRIANGULAR", true),
+    triangleStart: str("TRIANGLE_START", "").toUpperCase(),
+    spreadSampleIntervalMs: num("SPREAD_SAMPLE_INTERVAL_MS", 60000),
+    spreadHistoryDays: num("SPREAD_HISTORY_DAYS", 14),
     executionMode: oneOf("EXECUTION_MODE", ["paper"] as const, "paper"),
     mailer: oneOf("MAILER", ["console", "smtp", "resend"] as const, "console"),
     mailFrom: str("MAIL_FROM", "Signal Arbitrage <bot@example.com>"),

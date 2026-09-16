@@ -1,18 +1,38 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { MarketRow } from "../../shared/types.ts";
 import { ListingsAdapter } from "./adapters/listings.ts";
 import { MockAdapter } from "./adapters/mock.ts";
+import type { MarketAdapter, Quote } from "./adapters/types.ts";
 import type { Mailer, OutgoingMail } from "./comms/mailer.ts";
 import type { Config } from "./config.ts";
-import { runCycle } from "./index.ts";
+import { runCycle, wantedSymbols } from "./index.ts";
 import { MemoryStore } from "./store/memory.ts";
+
+/** Adapter mit festen Kursen, um Dreiecke und Historie deterministisch zu testen. */
+class StaticAdapter implements MarketAdapter {
+  constructor(readonly id: string, private readonly fees: number, public prices: Record<string, [number, number]>) {}
+  markets(): MarketRow[] {
+    return [{ id: this.id, kind: "mock", name: this.id, taker_fee_bps: this.fees, withdrawal_fees: {}, enabled: true }];
+  }
+  async init() {}
+  async fetchQuotes(symbols: string[]): Promise<Quote[]> {
+    const ts = new Date().toISOString();
+    return symbols.filter((s) => this.prices[s]).map((s) => ({
+      market_id: this.id, symbol: s, bid: this.prices[s][0], ask: this.prices[s][1],
+      bid_size: null, ask_size: null, last: null, ts, listing_id: null,
+    }));
+  }
+  async close() {}
+}
 
 function testConfig(overrides: Partial<Config> = {}): Config {
   return {
     workerId: "test", store: "memory", supabaseUrl: "", supabaseServiceRoleKey: "",
     adapters: ["mock", "listings"], exchanges: [], symbols: ["BTC/EUR"], pollIntervalMs: 1000,
     tradeSizeQuote: 500, minNetSpreadBps: 10, autoPaperBps: 0, opportunityTtlMs: 15000, slippageBps: 5,
-    transferModel: "prefunded", recordTicks: false, executionMode: "paper",
+    transferModel: "prefunded", recordTicks: false, triangular: false, triangleStart: "",
+    spreadSampleIntervalMs: 0, spreadHistoryDays: 14, executionMode: "paper",
     mailer: "console", mailFrom: "Bot <bot@example.com>", resendApiKey: "",
     smtp: { host: "", port: 587, user: "", pass: "", secure: false }, imap: null, inboxPollMs: 60000,
     mockMarkets: 2, mockSeed: 1, ...overrides,
@@ -118,4 +138,84 @@ test("Auto-Paper-Deal wird ab Schwelle angelegt und Live-Deals werden abgelehnt"
   const live = await store.createDeal({ opportunity_id: filled[0].opportunity_id, mode: "live", status: "approved" });
   await runCycle(cfg, store, adapters, markets, mailer);
   assert.equal(store.deals.get(live.id)!.status, "rejected");
+});
+
+test("Dreieck auf einer Börse: Kreuz-Paar wird angefragt, Gelegenheit erkannt, Paper-Deal über drei Legs ausgeführt", async () => {
+  const cfg = testConfig({ triangular: true, symbols: ["BTC/EUR", "ETH/EUR"], autoPaperBps: 20, minNetSpreadBps: 5 });
+  assert.deepEqual(wantedSymbols(cfg).sort(), ["BTC/ETH", "BTC/EUR", "ETH/BTC", "ETH/EUR"]);
+
+  // ETH/EUR liegt 1 % über dem, was BTC/EUR × ETH/BTC ergibt → EUR→BTC→ETH→EUR gewinnt brutto 100 bps.
+  const ex = new StaticAdapter("ex", 10, {
+    "BTC/EUR": [49990, 50000], "ETH/BTC": [0.05, 0.05], "ETH/EUR": [2525, 2530],
+  });
+  const store = new MemoryStore();
+  const markets = await store.syncMarkets(ex.markets());
+  const mailer = new RecordingMailer();
+
+  const stats = await runCycle(cfg, store, [ex], markets, mailer);
+  assert.equal(stats.quotes, 3); // BTC/ETH gibt es auf der Börse nicht
+  assert.equal(stats.triangles, 2);
+  const opps = [...store.opportunities.values()];
+  const tri = opps.find((o) => o.kind === "triangle" && o.symbol === "EUR→BTC→ETH→EUR");
+  assert.ok(tri, "Dreieck EUR→BTC→ETH→EUR fehlt");
+  assert.equal(tri.buy_market_id, "ex");
+  assert.equal(tri.sell_market_id, "ex");
+  assert.equal(tri.legs.length, 3);
+  assert.equal(tri.trade_size, cfg.tradeSizeQuote);
+  // brutto: 2525 / (50000 × 0.05) − 1 = 1 % ; netto: 1.01 × 0.999³ × (1 − 5 bps)³ − 1 ≈ 54.7 bps
+  assert.ok(Math.abs(tri.gross_spread_bps - 100) < 0.01, `brutto ${tri.gross_spread_bps}`);
+  assert.ok(tri.net_spread_bps > 50 && tri.net_spread_bps < 60, `netto ${tri.net_spread_bps}`);
+  // Die Gegenrichtung verliert und darf nicht als Gelegenheit auftauchen.
+  assert.ok(!opps.some((o) => o.symbol === "EUR→ETH→BTC→EUR"));
+
+  // Auto-Paper ab 20 bps → Deal wurde im selben Zyklus ausgeführt.
+  const [deal] = await store.listDeals("filled");
+  assert.ok(deal, "Auto-Paper-Deal fehlt");
+  assert.equal(deal.opportunity_id, tri.id);
+  assert.equal(deal.fills.length, 3);
+  assert.deepEqual(deal.fills.map((f) => `${f.side} ${f.symbol}`), ["buy BTC/EUR", "buy ETH/BTC", "sell ETH/EUR"]);
+  assert.deepEqual(deal.fills.map((f) => f.fee_asset), ["EUR", "BTC", "EUR"]);
+  assert.equal(deal.buy_order, null);
+  assert.ok(Math.abs((deal.realized_pnl_quote ?? 0) - tri.est_profit_quote) < 0.02);
+  assert.equal(store.opportunities.get(tri.id)!.status, "executed");
+
+  // Kurs kippt: Paper-Deal auf eine alte Gelegenheit wird zum neuen Kurs gefüllt und verliert.
+  ex.prices["ETH/EUR"] = [2450, 2455];
+  const { row: reopened } = await store.upsertOpportunity({ ...tri, kind: "triangle", buy_contact_id: null, sell_contact_id: null }, new Date());
+  const late = await store.createDeal({ opportunity_id: reopened.id, mode: "paper", status: "approved" });
+  await runCycle(cfg, store, [ex], markets, mailer);
+  const lateDeal = store.deals.get(late.id)!;
+  assert.equal(lateDeal.status, "filled", lateDeal.error ?? "");
+  assert.ok((lateDeal.realized_pnl_quote ?? 0) < 0);
+});
+
+test("Spread-Historie: alle bewerteten Routen werden im Takt gespeichert, Inserate nicht, alte Messpunkte werden gelöscht", async () => {
+  const cfg = testConfig({ triangular: true, symbols: ["BTC/EUR", "ETH/EUR"], spreadSampleIntervalMs: 1000, spreadHistoryDays: 1 });
+  const a = new StaticAdapter("a", 10, { "BTC/EUR": [49990, 50000], "ETH/BTC": [0.05, 0.05], "ETH/EUR": [2495, 2500] });
+  const b = new StaticAdapter("b", 10, { "BTC/EUR": [50100, 50110], "ETH/EUR": [2500, 2505] });
+  const store = new MemoryStore();
+  store.addListing({ market_id: "listings", symbol: "BTC/EUR", side: "sell", price: 40000, quantity: 1, external_url: null });
+  const listings = new ListingsAdapter(store);
+  const markets = await store.syncMarkets([...a.markets(), ...b.markets(), ...listings.markets()]);
+  const mailer = new RecordingMailer();
+
+  const state = { lastSampleAt: 0, lastCleanupAt: Date.now() };
+  const s1 = await runCycle(cfg, store, [a, b, listings], markets, mailer, state);
+  // Cross-Routen zwischen a und b: 2 Symbole × 2 Richtungen = 4; Dreiecke nur auf a: 2. Inserat-Routen fallen raus.
+  assert.equal(s1.samples, 6, `samples ${s1.samples}`);
+  assert.ok(store.spreadSamples.some((r) => r.net_bps < 0), "auch negative Netto-Spreads gehören in die Historie");
+  assert.ok(store.spreadSamples.some((r) => r.kind === "triangle"));
+  assert.ok(store.spreadSamples.every((r) => r.buy_market_id !== "listings" && r.sell_market_id !== "listings"));
+
+  // Innerhalb des Intervalls wird nicht erneut gesampelt.
+  const s2 = await runCycle(cfg, store, [a, b, listings], markets, mailer, state);
+  assert.equal(s2.samples, 0);
+  assert.equal(store.spreadSamples.length, 6);
+
+  // Aufräumen: Messpunkte älter als SPREAD_HISTORY_DAYS verschwinden beim nächsten Stundenlauf.
+  store.spreadSamples[0].ts = new Date(Date.now() - 2 * 86_400_000).toISOString();
+  state.lastCleanupAt = 0;
+  state.lastSampleAt = 0;
+  await runCycle(cfg, store, [a, b, listings], markets, mailer, state);
+  assert.equal(store.spreadSamples.length, 6 + 6 - 1);
 });

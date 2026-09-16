@@ -24,20 +24,63 @@ worker/ (dauerhaft laufender Prozess)              Supabase (Postgres)          
 
 ### Ablauf pro Zyklus (Standard alle 2 s)
 
-1. Alle Adapter liefern Bid/Ask je Symbol. Börsenkurse landen in `latest_prices`.
-2. Die Engine (`worker/src/engine/spread.ts`) prüft jedes Marktpaar: Kauf zum Ask, Verkauf zum Bid,
+1. Alle Adapter liefern Bid/Ask je Symbol, dazu die Kreuz-Paare für Dreiecke (siehe unten).
+   Börsenkurse landen in `latest_prices`.
+2. Die Cross-Engine (`worker/src/engine/spread.ts`) bewertet jedes Marktpaar: Kauf zum Ask, Verkauf zum Bid,
    abzüglich Taker-Gebühren beider Seiten, Slippage-Aufschlag und optional Abhebegebühr.
    Menge = `TRADE_SIZE_QUOTE / Ask`, begrenzt durch die verfügbare Tiefe.
-3. Kandidaten über `MIN_NET_SPREAD_BPS` werden als Gelegenheit gespeichert oder aktualisiert.
+3. Die Dreiecks-Engine (`worker/src/engine/triangle.ts`) bewertet auf jeder Börse alle Pfade
+   Startwährung → A → B → Startwährung in beiden Richtungen.
+4. Routen über `MIN_NET_SPREAD_BPS` werden als Gelegenheit gespeichert oder aktualisiert.
    Nicht mehr gesehene Gelegenheiten laufen nach `OPPORTUNITY_TTL_MS` ab.
-4. Ist ein Inserat mit Kontakt beteiligt, entsteht pro Inserat ein Nachrichtenentwurf (Status `draft`).
-5. Ab `AUTO_PAPER_BPS` wird automatisch ein Paper-Deal angelegt; sonst per Klick im Dashboard.
-6. Freigegebene Deals werden zu aktuellen Kursen simuliert (PnL inklusive Gebühren), freigegebene
+5. Ist ein Inserat mit Kontakt beteiligt, entsteht pro Inserat ein Nachrichtenentwurf (Status `draft`).
+6. Ab `AUTO_PAPER_BPS` wird automatisch ein Paper-Deal angelegt; sonst per Klick im Dashboard.
+7. Freigegebene Deals werden zu aktuellen Kursen simuliert (PnL inklusive Gebühren), freigegebene
    Nachrichten verschickt, der Posteingang per IMAP auf Antworten mit der Kennung `[SIG-XXXXXX]` geprüft.
+8. Alle `SPREAD_SAMPLE_INTERVAL_MS` wird jede bewertete Börsenroute in `spread_samples` geschrieben,
+   auch mit negativem Netto-Spread. Einmal pro Stunde werden Messpunkte älter als `SPREAD_HISTORY_DAYS` gelöscht.
+
+### Dreiecks-Arbitrage
+
+Ein Dreieck braucht drei Handelspaare auf derselben Börse, zum Beispiel BTC/EUR, ETH/EUR und ETH/BTC.
+Der Worker leitet die Kreuz-Paare aus `SYMBOLS` selbst ab (aus BTC/EUR und ETH/EUR werden ETH/BTC und BTC/ETH
+angefragt, der Adapter behält das Paar, das die Börse kennt). Pro Börse und Paar von Zwischenwährungen entstehen
+zwei Pfade, etwa EUR→BTC→ETH→EUR und EUR→ETH→BTC→EUR. Gewinnt der eine, verliert der andere.
+
+Rechnung pro Schritt: Kaufen zum Ask mal `(1 + Slippage)`, Verkaufen zum Bid mal `(1 − Slippage)`, jeweils
+abzüglich Taker-Gebühr. Brutto-Spread = Produkt der rohen Kurse minus 1, Netto-Spread = Endbetrag / Startbetrag
+minus 1. Der Startbetrag ist `TRADE_SIZE_QUOTE`, begrenzt durch die Orderbuchtiefe jedes Schritts (Rückrechnung
+über die vorherigen Schritte). In der Tabelle `opportunities` steht ein Dreieck mit `kind = 'triangle'`,
+`symbol` = Pfad, `buy_price = 1`, `sell_price` = Brutto-Multiplikator und den drei Schritten in `legs`.
+
+Paper-Ausführung: Der Pfad wird zu den aktuellen Kursen der Börse neu durchgerechnet, mit demselben Startbetrag.
+Alle drei Ausführungen stehen im Deal unter `fills`, die Gebühr je Schritt in der Quote-Währung des Paars
+(bei ETH/BTC also in BTC). Kippt der Kurs zwischen Erkennen und Ausführen, wird der Paper-PnL negativ. Genau das
+soll sichtbar werden.
+
+Warum Dreiecke für ein Studienprojekt interessant sind: kein Transfer zwischen Börsen, kein Bestand auf zwei
+Seiten, kein Gegenparteirisiko. Dafür drei Gebühren statt zwei; auf großen Börsen ist der Netto-Spread fast
+immer negativ. Die Verlaufsseite zeigt, wie oft er positiv wird.
+
+### Spread-Historie
+
+Die Seite `/arbitrage/history` liest über zwei Postgres-Funktionen aus `supabase/migrations/0002_triangles_and_history.sql`:
+
+- `spread_route_stats(since, threshold_bps)`: pro Route Anzahl Messpunkte, Durchschnitt, Median, P90, Maximum,
+  Anteil über 0 bps und Anteil über der Schwelle.
+- `spread_route_series(since, bucket_seconds)`: Durchschnitt und Maximum je Route in Zeitfenstern für das Diagramm.
+
+Zeiträume 1 h, 6 h, 24 h und 7 Tage (Fenster 1, 5, 15 bzw. 60 Minuten), Filter nach Art (Cross, Dreieck) und
+frei wählbare Schwelle. Das Diagramm zeigt bis zu sechs Routen, alle Routen stehen in der Tabelle darunter,
+die Zeitreihe zusätzlich als Tabellenansicht.
+
+Speicherbedarf: Mit vier Börsen, zwei Symbolen und Dreiecken sind es rund 30 Routen. Bei einem Messpunkt pro
+Minute ergibt das etwa 45.000 Zeilen pro Tag, rund 5 MB. Mit `SPREAD_HISTORY_DAYS=14` bleibt die Tabelle unter 100 MB.
 
 ### Einrichtung
 
-1. Supabase-Projekt anlegen und `supabase/migrations/0001_arbitrage.sql` im SQL-Editor ausführen.
+1. Supabase-Projekt anlegen und die Migrationen aus `supabase/migrations/` der Reihe nach im SQL-Editor ausführen
+   (`0001_arbitrage.sql`, dann `0002_triangles_and_history.sql`).
    Alle Tabellen haben RLS ohne Policies: Zugriff nur mit dem Service-Role-Key, der nie in den Browser darf.
 2. Dashboard: `.env.local` nach `.env.example` anlegen, dann
 
@@ -69,6 +112,8 @@ worker/ (dauerhaft laufender Prozess)              Supabase (Postgres)          
 | `TRADE_SIZE_QUOTE` | Einsatz pro Deal in EUR |
 | `MIN_NET_SPREAD_BPS` / `AUTO_PAPER_BPS` | Schwellen für Speichern bzw. automatischen Paper-Deal |
 | `TRANSFER_MODEL` | `prefunded` (Bestand auf beiden Börsen) oder `withdraw` (Abhebegebühr einrechnen) |
+| `TRIANGULAR` / `TRIANGLE_START` | Dreiecke bewerten, Startwährung (leer = Quote des ersten Symbols) |
+| `SPREAD_SAMPLE_INTERVAL_MS` / `SPREAD_HISTORY_DAYS` | Takt und Aufbewahrung der Spread-Historie |
 | `MAILER` | `console`, `smtp` oder `resend`; dazu `MAIL_FROM` und Zugangsdaten |
 | `IMAP_*` | Postfach für Antworten, leer = aus |
 

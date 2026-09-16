@@ -11,6 +11,7 @@ export const metadata: Metadata = {
 const NAV = [
   { href: "/arbitrage", label: "Übersicht" },
   { href: "/arbitrage/deals", label: "Deals" },
+  { href: "/arbitrage/history", label: "Verlauf" },
   { href: "/arbitrage/messages", label: "Nachrichten" },
   { href: "/arbitrage/listings", label: "Inserate" },
 ];

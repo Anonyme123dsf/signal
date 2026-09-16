@@ -13,7 +13,10 @@ function rng(seed: number) {
   };
 }
 
-const BASE_MID: Record<string, number> = { "BTC/EUR": 60000, "ETH/EUR": 3000, "SOL/EUR": 150 };
+/** Mittelkurse in EUR. Kreuz-Paare wie ETH/BTC werden daraus abgeleitet, damit Dreiecke konsistent sind. */
+const BASE_MID_EUR: Record<string, number> = { EUR: 1, BTC: 60000, ETH: 3000, SOL: 150 };
+/** Übliche Orientierung: Die Quote-Währung steht in dieser Liste vor der Basis (ETH/BTC ja, BTC/ETH nein). */
+const ASSET_ORDER = ["EUR", "BTC", "ETH", "SOL"];
 const FEES_BPS = [10, 25, 40, 60];
 
 /**
@@ -26,7 +29,8 @@ export class MockAdapter implements MarketAdapter {
   readonly id = "mock";
   private readonly rand: () => number;
   private readonly marketRows: MarketRow[];
-  private mid: Record<string, number> = {};
+  /** Aktueller Mittelkurs je Asset in EUR (Random Walk). */
+  private mid: Record<string, number> = { ...BASE_MID_EUR };
   private offset: Record<string, number> = {};
 
   constructor(count: number, seed: number) {
@@ -53,27 +57,42 @@ export class MockAdapter implements MarketAdapter {
     return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
   }
 
+  /**
+   * Mittelkurs eines Paars aus den Asset-Kursen; null, wenn ein Asset unbekannt ist
+   * oder die Orientierung unüblich wäre (es gibt ETH/BTC, aber kein BTC/ETH).
+   */
+  private pairMid(symbol: string): number | null {
+    const [base, quote] = symbol.split("/");
+    if (!base || !quote || this.mid[base] === undefined || this.mid[quote] === undefined) return null;
+    if (ASSET_ORDER.indexOf(quote) >= ASSET_ORDER.indexOf(base)) return null;
+    return this.mid[base] / this.mid[quote];
+  }
+
   async fetchQuotes(symbols: string[]): Promise<Quote[]> {
     const ts = new Date().toISOString();
     const out: Quote[] = [];
+    for (const asset of Object.keys(this.mid)) {
+      if (asset !== "EUR") this.mid[asset] *= 1 + 0.0005 * this.gauss();
+    }
     for (const symbol of symbols) {
-      this.mid[symbol] = (this.mid[symbol] ?? BASE_MID[symbol] ?? 100) * (1 + 0.0005 * this.gauss());
+      const pairMid = this.pairMid(symbol);
+      if (pairMid === null) continue;
       for (const m of this.marketRows) {
         const key = `${m.id}|${symbol}`;
         let off = this.offset[key] ?? 0;
         off += -0.2 * off + 0.0008 * this.gauss();
         if (this.rand() < 0.04) off += (this.rand() < 0.5 ? -1 : 1) * 0.006;
         this.offset[key] = off;
-        const mid = this.mid[symbol] * (1 + off);
+        const mid = pairMid * (1 + off);
         const halfSpread = 0.0003;
         out.push({
           market_id: m.id,
           symbol,
-          bid: round(mid * (1 - halfSpread), 2),
-          ask: round(mid * (1 + halfSpread), 2),
+          bid: roundSig(mid * (1 - halfSpread)),
+          ask: roundSig(mid * (1 + halfSpread)),
           bid_size: round(0.5 + this.rand() * 4, 4),
           ask_size: round(0.5 + this.rand() * 4, 4),
-          last: round(mid, 2),
+          last: roundSig(mid),
           ts,
           listing_id: null,
         });
@@ -88,4 +107,11 @@ export class MockAdapter implements MarketAdapter {
 function round(n: number, digits: number): number {
   const f = 10 ** digits;
   return Math.round(n * f) / f;
+}
+
+/** Rundet auf 7 signifikante Stellen, passt für 60000 (BTC/EUR) wie für 0.05 (ETH/BTC). */
+function roundSig(n: number): number {
+  if (n === 0) return 0;
+  const digits = 7 - Math.ceil(Math.log10(Math.abs(n)));
+  return round(n, Math.max(0, digits));
 }

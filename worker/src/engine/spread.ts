@@ -1,4 +1,4 @@
-import type { MarketRow } from "../../../shared/types.ts";
+import type { Leg, MarketRow, OpportunityKind } from "../../../shared/types.ts";
 import type { Quote } from "../adapters/types.ts";
 
 export interface EngineParams {
@@ -11,6 +11,7 @@ export interface EngineParams {
 }
 
 export interface Candidate {
+  kind: OpportunityKind;
   symbol: string;
   buy_market_id: string;
   sell_market_id: string;
@@ -26,17 +27,22 @@ export interface Candidate {
   /** Ansprechpartner, falls die Kauf- bzw. Verkaufsseite ein Inserat ist. */
   buy_contact_id: string | null;
   sell_contact_id: string | null;
+  legs: Leg[];
 }
 
 export function baseAsset(symbol: string): string {
   return symbol.split("/")[0] ?? symbol;
 }
 
+export function quoteAsset(symbol: string): string {
+  return symbol.split("/")[1] ?? "";
+}
+
 /**
  * Bewertet ein Paar: Kauf zum Ask bei `buy`, Verkauf zum Bid bei `sell`.
  * Rechnet Taker-Gebühren beider Seiten, Slippage-Aufschlag und optional die
- * Abhebegebühr ein. Gibt null zurück, wenn das Paar nicht handelbar ist oder
- * der Netto-Spread unter der Schwelle liegt.
+ * Abhebegebühr ein. Gibt null zurück, wenn das Paar nicht handelbar ist.
+ * Der Netto-Spread kann negativ sein; die Schwelle wendet `findOpportunities` an.
  */
 export function evaluatePair(
   buy: Quote,
@@ -46,7 +52,6 @@ export function evaluatePair(
   p: EngineParams,
 ): Candidate | null {
   if (buy.ask == null || sell.bid == null || buy.ask <= 0 || sell.bid <= 0) return null;
-  if (sell.bid <= buy.ask) return null;
 
   let amount = p.tradeSizeQuote / buy.ask;
   if (buy.ask_size != null && buy.ask_size > 0) amount = Math.min(amount, buy.ask_size);
@@ -70,9 +75,17 @@ export function evaluatePair(
   const profit = sellProceeds - sellFee - buyCost - buyFee - transferCost;
   const gross = ((sell.bid - buy.ask) / buy.ask) * 1e4;
   const net = (profit / buyCost) * 1e4;
-  if (net < p.minNetSpreadBps) return null;
+  const base = baseAsset(buy.symbol);
+  const quote = quoteAsset(buy.symbol);
+  const legs: Leg[] = [
+    { market_id: buy.market_id, symbol: buy.symbol, side: "buy", price: round(buyPx, 8), from_asset: quote, to_asset: base,
+      amount_in: round(buyCost + buyFee, 8), amount_out: round(amount, 8) },
+    { market_id: sell.market_id, symbol: sell.symbol, side: "sell", price: round(sellPx, 8), from_asset: base, to_asset: quote,
+      amount_in: round(amount, 8), amount_out: round(sellProceeds - sellFee, 8) },
+  ];
 
   return {
+    kind: "cross",
     symbol: buy.symbol,
     buy_market_id: buy.market_id,
     sell_market_id: sell.market_id,
@@ -87,6 +100,7 @@ export function evaluatePair(
     sell_listing_id: sell.listing_id ?? null,
     buy_contact_id: buy.contact_id ?? null,
     sell_contact_id: sell.contact_id ?? null,
+    legs,
   };
 }
 
@@ -97,7 +111,8 @@ function isPair(a: Quote, b: Quote): boolean {
   return Boolean(a.listing_id && b.listing_id && a.listing_id !== b.listing_id);
 }
 
-export function findOpportunities(
+/** Bewertet alle Marktpaare, auch die mit negativem Netto-Spread. Grundlage für Gelegenheiten und Historie. */
+export function evaluateAllPairs(
   quotes: Quote[],
   markets: Map<string, MarketRow>,
   p: EngineParams,
@@ -122,6 +137,19 @@ export function findOpportunities(
     }
   }
   return out.sort((a, b) => b.net_spread_bps - a.net_spread_bps);
+}
+
+/** Nur Paare mit Bid über Ask und Netto-Spread ab Schwelle. */
+export function findOpportunities(
+  quotes: Quote[],
+  markets: Map<string, MarketRow>,
+  p: EngineParams,
+): Candidate[] {
+  return filterOpportunities(evaluateAllPairs(quotes, markets, p), p.minNetSpreadBps);
+}
+
+export function filterOpportunities(all: Candidate[], minNetSpreadBps: number): Candidate[] {
+  return all.filter((c) => c.gross_spread_bps > 0 && c.net_spread_bps >= minNetSpreadBps);
 }
 
 export function candidateKey(c: Pick<Candidate, "symbol" | "buy_market_id" | "sell_market_id" | "buy_listing_id" | "sell_listing_id">): string {
