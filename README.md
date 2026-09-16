@@ -1,36 +1,99 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Signal
 
-## Getting Started
+Next.js-Projekt (App Router, Tailwind 4, Supabase) mit zwei Teilen:
 
-First, run the development server:
+- **`/`**: die bestehende Signal-Oberfläche (`app/page.tsx`).
+- **`/arbitrage`**: Dashboard des Arbitrage-Moduls. Der zugehörige Worker liegt in `worker/`.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## Arbitrage-Modul
+
+Ziel: Preisunterschiede für dasselbe Gut über mehrere Märkte hinweg erkennen, nach Gebühren bewerten,
+als Paper-Trade abwickeln und, wo ein Inserat mit Kontakt beteiligt ist, Käufer und Verkäufer per E-Mail
+zusammenführen. Nachrichten werden nie ohne Freigabe verschickt, Echthandel ist bewusst nicht implementiert.
+
+```
+worker/ (dauerhaft laufender Prozess)              Supabase (Postgres)          Next.js (Vercel)
+┌─────────────────────────────────────────┐        ┌────────────────────┐        ┌────────────────────┐
+│ Adapter: ccxt | mock | listings         │ ─────▶ │ latest_prices      │ ◀───── │ /arbitrage         │
+│ Engine:  Spreads nach Gebühren          │ ─────▶ │ opportunities      │ ◀───── │ Paper-Trade,       │
+│ Paper:   freigegebene Deals ausführen   │ ◀───── │ deals              │ ◀───── │ Verwerfen          │
+│ Comms:   Entwürfe, Versand, IMAP-Abruf  │ ◀───── │ messages, contacts │ ◀───── │ Freigeben          │
+│                                         │ ◀───── │ listings           │ ◀───── │ Inserat erfassen   │
+└─────────────────────────────────────────┘        └────────────────────┘        └────────────────────┘
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Ablauf pro Zyklus (Standard alle 2 s)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. Alle Adapter liefern Bid/Ask je Symbol. Börsenkurse landen in `latest_prices`.
+2. Die Engine (`worker/src/engine/spread.ts`) prüft jedes Marktpaar: Kauf zum Ask, Verkauf zum Bid,
+   abzüglich Taker-Gebühren beider Seiten, Slippage-Aufschlag und optional Abhebegebühr.
+   Menge = `TRADE_SIZE_QUOTE / Ask`, begrenzt durch die verfügbare Tiefe.
+3. Kandidaten über `MIN_NET_SPREAD_BPS` werden als Gelegenheit gespeichert oder aktualisiert.
+   Nicht mehr gesehene Gelegenheiten laufen nach `OPPORTUNITY_TTL_MS` ab.
+4. Ist ein Inserat mit Kontakt beteiligt, entsteht pro Inserat ein Nachrichtenentwurf (Status `draft`).
+5. Ab `AUTO_PAPER_BPS` wird automatisch ein Paper-Deal angelegt; sonst per Klick im Dashboard.
+6. Freigegebene Deals werden zu aktuellen Kursen simuliert (PnL inklusive Gebühren), freigegebene
+   Nachrichten verschickt, der Posteingang per IMAP auf Antworten mit der Kennung `[SIG-XXXXXX]` geprüft.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### Einrichtung
 
-## Learn More
+1. Supabase-Projekt anlegen und `supabase/migrations/0001_arbitrage.sql` im SQL-Editor ausführen.
+   Alle Tabellen haben RLS ohne Policies: Zugriff nur mit dem Service-Role-Key, der nie in den Browser darf.
+2. Dashboard: `.env.local` nach `.env.example` anlegen, dann
 
-To learn more about Next.js, take a look at the following resources:
+   ```bash
+   npm install
+   npm run dev          # http://localhost:3000/arbitrage
+   ```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+3. Worker: `worker/.env` nach `worker/.env.example` anlegen, dann
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+   ```bash
+   cd worker
+   npm install
+   npm run dev          # echte Börsenkurse (nur öffentliche Daten, kein API-Key nötig)
+   npm run demo         # ohne Datenbank und Internet: Mock-Börsen, In-Memory-Store, Mails im Log
+   npm test             # Engine- und End-to-End-Tests
+   ```
 
-## Deploy on Vercel
+   Der Worker gehört nicht auf Vercel (Serverless beendet lange Prozesse). Ein kleiner VPS, ein Raspberry Pi
+   oder der eigene Rechner reichen; `npm start` unter systemd oder pm2 laufen lassen.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+### Konfiguration (Auszug, vollständig in `worker/.env.example`)
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Variable | Bedeutung |
+| --- | --- |
+| `ADAPTERS` | `ccxt,listings` im Betrieb, `mock,listings` zum Entwickeln |
+| `EXCHANGES` | CCXT-IDs, Standard `kraken,bitstamp,coinbase,bitvavo` |
+| `SYMBOLS` | z. B. `BTC/EUR,ETH/EUR` |
+| `TRADE_SIZE_QUOTE` | Einsatz pro Deal in EUR |
+| `MIN_NET_SPREAD_BPS` / `AUTO_PAPER_BPS` | Schwellen für Speichern bzw. automatischen Paper-Deal |
+| `TRANSFER_MODEL` | `prefunded` (Bestand auf beiden Börsen) oder `withdraw` (Abhebegebühr einrechnen) |
+| `MAILER` | `console`, `smtp` oder `resend`; dazu `MAIL_FROM` und Zugangsdaten |
+| `IMAP_*` | Postfach für Antworten, leer = aus |
+
+Gebühren stehen in der Tabelle `markets` und überschreiben die Defaults aus `worker/src/markets.ts`.
+
+### Neuen Markt anbinden
+
+`worker/src/adapters/types.ts` definiert die Schnittstelle: `markets()` liefert Märkte mit Gebühren,
+`fetchQuotes(symbols)` liefert Bid/Ask. Neue Klasse anlegen, in `worker/src/adapters/registry.ts` registrieren,
+in `ADAPTERS` eintragen. Engine, Store und Dashboard bleiben unverändert.
+
+### Grenzen und rechtliche Hinweise
+
+- Auf liquiden Kryptobörsen sind Spreads zwischen großen Handelspaaren meist kleiner als die Gebühren und in
+  Millisekunden weg. Sinnvoll sind EUR-Bücher kleinerer Börsen, wenig gehandelte Paare und langsame Märkte wie Inserate.
+  Erst über Tage Paper-Traden und die Verteilung der Netto-Spreads ansehen, dann entscheiden.
+- Bei `TRANSFER_MODEL=prefunded` muss Bestand auf beiden Börsen liegen und regelmäßig umgeschichtet werden.
+- Kleinanzeigen-Plattformen verbieten Scraping und automatisierte Nachrichten. Inserate werden deshalb manuell erfasst,
+  Nachrichten gehen erst nach Freigabe und mit Hinweis auf die Systemunterstützung raus.
+- Vermittlung von Wertpapieren oder Derivaten ist in Deutschland erlaubnispflichtig (WpIG/KWG). Gewerblicher Warenhandel
+  bringt Gewährleistungs- und Widerrufspflichten. Vor einem Echtbetrieb rechtlich prüfen lassen.
+- Ein Bot, der sich selbst E-Mail-Konten anlegt, ist nicht vorgesehen. Stattdessen eine eigene Domain mit Postfach
+  (SMTP/IMAP oder Resend) verwenden.
+
+## Next.js
+
+Standardbefehle: `npm run dev`, `npm run build`, `npm run start`, `npm run lint`.
+Deployment des Dashboards über [Vercel](https://vercel.com/new); die Umgebungsvariablen aus `.env.example` dort setzen.
