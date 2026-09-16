@@ -13,7 +13,7 @@ const demo = process.env.DEMO === "1";
 // Diese Werte haben Vorrang vor worker/.env (dotenv überschreibt gesetzte Variablen nicht),
 // die Supabase-Zugangsdaten aus der .env bleiben also erhalten.
 const demoWorkerEnv = demo
-  ? { ADAPTERS: "mock", MIN_NET_SPREAD_BPS: "5", AUTO_PAPER_BPS: "0", PAPER_BALANCES: "", MOCK_MARKETS: "3" }
+  ? { ADAPTERS: "mock", MIN_NET_SPREAD_BPS: "5", AUTO_PAPER_BPS: "15", PAPER_BALANCES: "", MOCK_MARKETS: "3" }
   : {};
 
 const jobs = [
@@ -49,5 +49,5 @@ function stopAll(code) {
 process.on("SIGINT", () => stopAll(0));
 process.on("SIGTERM", () => stopAll(0));
 
-if (demo) console.log("Testmodus: Mock-Börsen, Schwelle 5 bps, keine Bestandsprüfung. Zum Beenden Strg+C.\n");
+if (demo) console.log("Testmodus: Mock-Börsen, Schwelle 5 bps, Automatik-Handel ab 15 bps, keine Bestandsprüfung. Zum Beenden Strg+C.\n");
 console.log("Dashboard: http://localhost:3000/arbitrage   (Strg+C beendet beide Prozesse)\n");
