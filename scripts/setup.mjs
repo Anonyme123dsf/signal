@@ -34,6 +34,14 @@ const ask = async (question, fallback = "", flag = "") => {
   const answer = (await rl.question(fallback ? `${question} [${fallback}]: ` : `${question}: `)).trim();
   return answer || fallback;
 };
+/** Ein ungültiger Wert aus einem Argument kann nicht nachgefragt werden: Fehler ausgeben und abbrechen. */
+const rejectFlag = (flag, message) => {
+  if (args[flag] !== undefined) {
+    console.error(`--${flag}: ${message}`);
+    process.exit(1);
+  }
+  console.log(`     ${message}`);
+};
 
 console.log("\nSignal Arbitrage: Einrichtung\n");
 console.log("Du brauchst ein Supabase-Projekt (kostenlos, https://supabase.com).");
@@ -42,7 +50,7 @@ console.log("Die beiden Werte findest du dort unter Project Settings → API.\n"
 let url = "";
 while (!/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/.test(url)) {
   url = await ask("1/3  Project URL (sieht aus wie https://abcdefgh.supabase.co)", "", "url");
-  if (!/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/.test(url)) console.log("     Das sieht nicht nach einer Supabase-URL aus, bitte noch einmal.");
+  if (!/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/.test(url)) rejectFlag("url", "Das sieht nicht nach einer Supabase-URL aus, bitte noch einmal.");
 }
 url = url.replace(/\/$/, "");
 // Beide Formate sind gültig: der alte service_role Key (JWT, beginnt mit eyJ) und der neue Secret Key (sb_secret_...).
@@ -50,7 +58,7 @@ const looksLikeKey = (k) => k.startsWith("sb_secret_") || (k.startsWith("eyJ") &
 let key = "";
 while (!looksLikeKey(key)) {
   key = await ask("2/3  Key: Project Settings → API Keys → service_role (eyJ…) oder Secret key (sb_secret_…)", "", "key");
-  if (!looksLikeKey(key)) console.log("     Das sieht nicht nach einem service_role oder sb_secret_ Key aus. Nicht den anon oder publishable Key nehmen.");
+  if (!looksLikeKey(key)) rejectFlag("key", "Das sieht nicht nach einem service_role oder sb_secret_ Key aus. Nicht den anon oder publishable Key nehmen.");
 }
 const password = await ask("3/3  Passwort für das Dashboard", randomBytes(9).toString("base64url"), "password");
 const alertEmail = await ask("Optional: deine E-Mail für Benachrichtigungen (Enter = keine)", "", "email");

@@ -12,8 +12,11 @@ Voraussetzungen: [Node.js 22](https://nodejs.org) und Git. Ein kostenloses Proje
 ```bash
 git clone https://github.com/Anonyme123dsf/signal.git
 cd signal
-npm run setup        # fragt nach Supabase-URL, service_role Key und einem Passwort, installiert alles
+npm run setup        # fragt nach Supabase-URL, Key und einem Passwort, installiert alles
 ```
+
+Die URL steht in Supabase unter Integrations → Data API als "API URL". Der Key unter Project Settings → API Keys:
+entweder `service_role` (Legacy API keys, beginnt mit `eyJ`) oder ein Secret key (beginnt mit `sb_secret_`). Beide gehen.
 
 Dann einmalig den Inhalt von `supabase/setup.sql` im Supabase SQL-Editor einfügen und auf "Run" klicken.
 
