@@ -1,0 +1,24 @@
+/* Nur Theme und Utilities, ohne Preflight: Die bestehende Startseite unter / bleibt unberührt. */
+@import "tailwindcss/theme" layer(theme);
+@import "tailwindcss/utilities" layer(utilities);
+
+.arb {
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  color: #d8d8e6;
+  background: #0a0a12;
+  min-height: 100vh;
+}
+.arb table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+.arb th { text-align: left; font-weight: 500; color: #7c7c9a; padding: 0.5rem 0.6rem; border-bottom: 1px solid #22223a; white-space: nowrap; }
+.arb td { padding: 0.5rem 0.6rem; border-bottom: 1px solid #16162a; vertical-align: top; }
+.arb tr:hover td { background: #10101e; }
+.arb .num { font-family: var(--font-geist-mono), ui-monospace, monospace; text-align: right; white-space: nowrap; }
+.arb .btn { display: inline-block; padding: 0.3rem 0.7rem; border-radius: 0.4rem; border: 1px solid #33335a; background: #14142a; color: #d8d8e6; font-size: 0.8rem; cursor: pointer; }
+.arb .btn:hover { background: #1c1c38; }
+.arb .btn-primary { border-color: #4ade80; color: #4ade80; }
+.arb .btn-danger { border-color: #f87171; color: #f87171; }
+.arb .card { background: #0f0f1e; border: 1px solid #1e1e34; border-radius: 0.6rem; padding: 1rem; }
+.arb .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.7rem; border: 1px solid #33335a; color: #9c9cba; }
+.arb input, .arb select { background: #0a0a12; border: 1px solid #33335a; border-radius: 0.4rem; padding: 0.4rem 0.6rem; color: #d8d8e6; font-size: 0.85rem; width: 100%; }
+.arb label { display: block; font-size: 0.75rem; color: #7c7c9a; margin-bottom: 0.2rem; }
+.arb pre { white-space: pre-wrap; font-family: inherit; font-size: 0.8rem; color: #b0b0c8; }

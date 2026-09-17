@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Der Worker hat ein eigenes tsconfig und wird separat geprüft.
+    "worker/**",
   ]),
 ]);
 

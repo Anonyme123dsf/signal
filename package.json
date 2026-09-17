@@ -6,12 +6,19 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "setup": "node scripts/setup.mjs",
+    "start:all": "node scripts/start-all.mjs",
+    "demo": "npm --prefix worker run demo",
+    "sql:bundle": "node scripts/bundle-sql.mjs",
+    "demo:dashboard": "DEMO=1 node scripts/start-all.mjs",
+    "pokemon": "npm --prefix worker run pokemon --"
   },
   "dependencies": {
     "@supabase/auth-helpers-nextjs": "^0.15.0",
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.96.0",
+    "@vercel/speed-insights": "^1.3.1",
     "next": "16.1.6",
     "react": "19.2.3",
     "react-dom": "19.2.3"
