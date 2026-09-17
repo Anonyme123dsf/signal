@@ -15,7 +15,26 @@ export interface Overview {
   markets: MarketRow[];
   prices: PriceRow[];
   openOpportunities: OpportunityRow[];
-  filledDeals: Pick<DealRow, "realized_pnl_quote">[];
+  dealSummary: DealSummary;
+}
+
+/** Serverseitig gezählte Deal-Kennzahlen (Funktion deal_summary), nicht von der 1000-Zeilen-Grenze betroffen. */
+export interface DealSummary {
+  total: number;
+  filled: number;
+  wins: number;
+  pnl: number;
+}
+
+const EMPTY_SUMMARY: DealSummary = { total: 0, filled: 0, wins: 0, pnl: 0 };
+
+export async function getDealSummary(): Promise<DealSummary | null> {
+  const db = getServiceClient();
+  if (!db) return null;
+  const res = await db.rpc("deal_summary");
+  if (res.error) throw new Error(`deal_summary: ${res.error.message}`);
+  const row = (res.data as DealSummary[] | null)?.[0];
+  return row ? { total: Number(row.total), filled: Number(row.filled), wins: Number(row.wins), pnl: Number(row.pnl) } : EMPTY_SUMMARY;
 }
 
 function must<T>(res: { data: T | null; error: { message: string } | null }, ctx: string): T {
@@ -26,20 +45,22 @@ function must<T>(res: { data: T | null; error: { message: string } | null }, ctx
 export async function getOverview(): Promise<Overview | null> {
   const db = getServiceClient();
   if (!db) return null;
-  const [hb, markets, prices, opps, deals] = await Promise.all([
+  const [hb, markets, prices, opps, summary] = await Promise.all([
     db.from("worker_heartbeats").select("*").order("last_seen", { ascending: false }),
     db.from("markets").select("*").order("id"),
     db.from("latest_prices").select("*"),
     db.from("opportunities").select("*").eq("status", "open").order("net_spread_bps", { ascending: false }).limit(50),
-    db.from("deals").select("realized_pnl_quote").eq("status", "filled"),
+    db.rpc("deal_summary"),
   ]);
+  if (summary.error) throw new Error(`deal_summary: ${summary.error.message}`);
+  const s = (summary.data as DealSummary[] | null)?.[0];
   return {
     fetchedAt: Date.now(),
     heartbeats: must(hb, "worker_heartbeats"),
     markets: must(markets, "markets"),
     prices: must(prices, "latest_prices"),
     openOpportunities: must(opps, "opportunities"),
-    filledDeals: must(deals, "deals"),
+    dealSummary: s ? { total: Number(s.total), filled: Number(s.filled), wins: Number(s.wins), pnl: Number(s.pnl) } : EMPTY_SUMMARY,
   };
 }
 

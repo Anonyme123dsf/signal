@@ -5,7 +5,7 @@ import type { SpreadSampleRow } from "@/shared/types";
 export const dynamic = "force-dynamic";
 
 const COLUMNS = ["ts", "kind", "symbol", "buy_market_id", "sell_market_id", "gross_bps", "fees_bps", "net_bps", "est_profit_quote", "trade_size"] as const;
-const PAGE = 5000;
+const PAGE = 1000; // Supabase gibt pro Abfrage höchstens 1000 Zeilen zurück
 const MAX_ROWS = 300_000;
 
 function csvField(v: unknown): string {

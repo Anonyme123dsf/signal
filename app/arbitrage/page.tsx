@@ -15,7 +15,7 @@ export default async function OverviewPage() {
   const worker = data.heartbeats[0];
   const workerOnline = worker ? now - new Date(worker.last_seen).getTime() < 20_000 : false;
   const status = (worker?.status ?? {}) as Record<string, unknown>;
-  const pnl = data.filledDeals.reduce((s, d) => s + Number(d.realized_pnl_quote ?? 0), 0);
+  const pnl = data.dealSummary.pnl;
   const marketById = new Map(data.markets.map((m) => [m.id, m]));
   const symbols = [...new Set(data.prices.map((p) => p.symbol))].sort();
   const priceMarkets = [...new Set(data.prices.map((p) => p.market_id))].sort();
@@ -48,7 +48,7 @@ export default async function OverviewPage() {
         <div className="card">
           <div className="text-xs text-[#7c7c9a]">Paper-PnL</div>
           <div className={`text-lg font-medium ${pnl >= 0 ? "text-[#4ade80]" : "text-[#f87171]"}`}>{fmtEur(pnl)}</div>
-          <div className="text-xs text-[#7c7c9a]">{data.filledDeals.length} ausgeführte Deals</div>
+          <div className="text-xs text-[#7c7c9a]">{fmtNum(data.dealSummary.filled, 0)} ausgeführte Deals</div>
         </div>
       </section>
 

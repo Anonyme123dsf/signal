@@ -1,6 +1,6 @@
 import type { OrderFill } from "@/shared/types";
-import { fmtAmount, fmtBps, fmtEur, fmtPrice, fmtTime, shortId } from "@/lib/arbitrage/format";
-import { getDeals } from "@/lib/arbitrage/queries";
+import { fmtAmount, fmtBps, fmtEur, fmtNum, fmtPrice, fmtTime, shortId } from "@/lib/arbitrage/format";
+import { getDealSummary, getDeals } from "@/lib/arbitrage/queries";
 import { NotConfigured } from "../components/NotConfigured";
 import { AutoRefresh } from "../components/AutoRefresh";
 
@@ -22,24 +22,22 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export default async function DealsPage() {
-  const deals = await getDeals();
-  if (!deals) return <NotConfigured />;
-  const filled = deals.filter((d) => d.status === "filled");
-  const pnl = filled.reduce((s, d) => s + Number(d.realized_pnl_quote ?? 0), 0);
-  const wins = filled.filter((d) => Number(d.realized_pnl_quote ?? 0) > 0).length;
+  const [deals, summary] = await Promise.all([getDeals(), getDealSummary()]);
+  if (!deals || !summary) return <NotConfigured />;
+  const winRate = summary.filled ? Math.round((summary.wins / summary.filled) * 100) : 0;
 
   return (
     <>
       {/* Deals werden vom Worker im nächsten Zyklus ausgeführt. */}
       <AutoRefresh intervalMs={5000} />
       <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="card"><div className="text-xs text-[#7c7c9a]">Deals gesamt</div><div className="text-lg font-medium">{deals.length}</div></div>
-        <div className="card"><div className="text-xs text-[#7c7c9a]">Ausgeführt</div><div className="text-lg font-medium">{filled.length}</div></div>
-        <div className="card"><div className="text-xs text-[#7c7c9a]">Trefferquote</div><div className="text-lg font-medium">{filled.length ? `${Math.round((wins / filled.length) * 100)} %` : "–"}</div></div>
-        <div className="card"><div className="text-xs text-[#7c7c9a]">Paper-PnL</div><div className={`text-lg font-medium ${pnl >= 0 ? "text-[#4ade80]" : "text-[#f87171]"}`}>{fmtEur(pnl)}</div></div>
+        <div className="card"><div className="text-xs text-[#7c7c9a]">Deals gesamt</div><div className="text-lg font-medium">{fmtNum(summary.total, 0)}</div></div>
+        <div className="card"><div className="text-xs text-[#7c7c9a]">Ausgeführt</div><div className="text-lg font-medium">{fmtNum(summary.filled, 0)}</div></div>
+        <div className="card"><div className="text-xs text-[#7c7c9a]">Trefferquote</div><div className="text-lg font-medium">{summary.filled ? `${winRate} %` : "–"}</div></div>
+        <div className="card"><div className="text-xs text-[#7c7c9a]">Paper-PnL</div><div className={`text-lg font-medium ${summary.pnl >= 0 ? "text-[#4ade80]" : "text-[#f87171]"}`}>{fmtEur(summary.pnl)}</div></div>
       </section>
       <section className="card overflow-x-auto">
-        <h2 className="text-sm font-medium mb-3">Deals</h2>
+        <h2 className="text-sm font-medium mb-3">Deals (die letzten {fmtNum(deals.length, 0)})</h2>
         {deals.length === 0 ? (
           <p className="text-sm text-[#7c7c9a]">Noch keine Deals. Auf der Übersicht eine Gelegenheit als Paper-Trade anlegen oder AUTO_PAPER_BPS setzen.</p>
         ) : (
